@@ -1,0 +1,58 @@
+/**
+ * 主题变量 - 黑夜 / 白昼模式
+ * 默认跟随系统，支持手动切换
+ */
+:root,
+[data-theme="dark"] {
+  --landing-bg: linear-gradient(160deg, #0a0e14 0%, #111827 40%, #0d1117 100%);
+  --landing-bg-grid: rgba(59, 130, 246, 0.03);
+  --landing-brand: rgba(59, 130, 246, 0.9);
+  --landing-title: rgba(255, 255, 255, 0.96);
+  --landing-desc: rgba(255, 255, 255, 0.65);
+  --landing-tech: rgba(255, 255, 255, 0.4);
+  --landing-credit: rgba(255, 255, 255, 0.35);
+  --body-bg: linear-gradient(135deg, #0f1419 0%, #1a1f2e 50%, #0d1117 100%);
+  --glass-bg: rgba(255, 255, 255, 0.08);
+  --glass-bg-panel: rgba(30, 35, 50, 0.65);
+  --glass-bg-header: rgba(25, 30, 45, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.15);
+  --glass-border-strong: rgba(255, 255, 255, 0.22);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.25), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.2);
+  --text-primary: rgba(255, 255, 255, 0.95);
+  --text-secondary: rgba(255, 255, 255, 0.75);
+  --text-tertiary: rgba(255, 255, 255, 0.5);
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --glass-radius: 14px;
+  --glass-radius-sm: 10px;
+  --glass-blur: 24px;
+  --glass-blur-strong: 32px;
+}
+
+[data-theme="light"] {
+  --landing-bg: linear-gradient(160deg, #ffffff 0%, #fafbff 40%, #ffffff 100%);
+  --landing-bg-grid: rgba(59, 130, 246, 0.06);
+  --landing-brand: #2563eb;
+  --landing-title: #0f172a;
+  --landing-desc: rgba(15, 23, 42, 0.85);
+  --landing-tech: rgba(15, 23, 42, 0.7);
+  --landing-credit: rgba(15, 23, 42, 0.6);
+  --body-bg: linear-gradient(135deg, #ffffff 0%, #fafbff 50%, #ffffff 100%);
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-bg-panel: rgba(255, 255, 255, 0.9);
+  --glass-bg-header: rgba(255, 255, 255, 0.95);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-border-strong: rgba(0, 0, 0, 0.12);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --text-primary: #0f172a;
+  --text-secondary: rgba(15, 23, 42, 0.85);
+  --text-tertiary: rgba(15, 23, 42, 0.7);
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --glass-radius: 14px;
+  --glass-radius-sm: 10px;
+  --glass-blur: 24px;
+  --glass-blur-strong: 32px;
+}

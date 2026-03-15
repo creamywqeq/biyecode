@@ -1,24 +1,12 @@
 /**
- * 暗色毛玻璃主题 - 科学计算可视化系统
- * 借鉴 Tecplot 专业流体后处理软件，透明毛玻璃效果
+ * 毛玻璃主题 - 科学计算可视化系统
+ * 变量由 theme.css 提供（支持黑夜/白昼模式）
  */
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.08);
-  --glass-bg-panel: rgba(30, 35, 50, 0.65);
-  --glass-bg-header: rgba(25, 30, 45, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.15);
-  --glass-border-strong: rgba(255, 255, 255, 0.22);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.25), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
-  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.2);
   --glass-radius: 14px;
   --glass-radius-sm: 10px;
   --glass-blur: 24px;
   --glass-blur-strong: 32px;
-  --text-primary: rgba(255, 255, 255, 0.95);
-  --text-secondary: rgba(255, 255, 255, 0.75);
-  --text-tertiary: rgba(255, 255, 255, 0.5);
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
 }
 
 .glass-panel {
