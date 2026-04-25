@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { FlowDataset } from "../flow";
 import { extractIsosurface } from "../algorithms/IsosurfaceExtractor";
+import { extractExternalSurface, extractExternalEdges } from "../algorithms/SurfaceExtractor";
 
 /**
  * 基于 Vue+Three.js 的 Web 端流场后处理系统 - 主渲染引擎
@@ -195,7 +196,10 @@ export class FlowRenderer {
     const color = options?.color ?? 0x8aa1c2;
     const opacity = options?.opacity ?? 0.45;
 
-    const geometry = buildFEBRICKWireframeGeometry(dataset);
+    const useSurfaceOnly = dataset.elements.elementCount > 1000;
+    const geometry = useSurfaceOnly
+      ? buildExternalWireframeGeometry(dataset)
+      : buildFEBRICKWireframeGeometry(dataset);
     const material = new THREE.LineBasicMaterial({
       color,
       transparent: opacity < 1,
@@ -245,7 +249,10 @@ export class FlowRenderer {
     this.lutTexture = createTurboLUTTexture(lutSize);
 
     // 2) 构建几何（位置 + index + 标量 attribute）
-    const geometry = buildFEBRICKSurfaceTrianglesGeometry(dataset);
+    const useSurfaceOnly = dataset.elements.elementCount > 1000;
+    const geometry = useSurfaceOnly
+      ? buildExternalSurfaceGeometry(dataset)
+      : buildFEBRICKSurfaceTrianglesGeometry(dataset);
     geometry.setAttribute("aScalar", new THREE.BufferAttribute(scalar, 1));
 
     // 3) ShaderMaterial：片元阶段按 LUT 采样上色（平滑过渡）
@@ -545,6 +552,27 @@ function buildFEBRICKSurfaceTrianglesGeometry(dataset: FlowDataset): THREE.Buffe
 
   geometry.setIndex(new THREE.BufferAttribute(index, 1));
   geometry.computeVertexNormals(); // 方便未来加光照/轮廓等效果（当前 shader 不用法线也无妨）
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function buildExternalWireframeGeometry(dataset: FlowDataset): THREE.BufferGeometry {
+  const edgeIndices = extractExternalEdges(dataset);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(dataset.nodes.coords, 3));
+  geometry.setIndex(new THREE.BufferAttribute(edgeIndices, 1));
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function buildExternalSurfaceGeometry(dataset: FlowDataset): THREE.BufferGeometry {
+  const surface = extractExternalSurface(dataset);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(dataset.nodes.coords, 3));
+  geometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
+  geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;

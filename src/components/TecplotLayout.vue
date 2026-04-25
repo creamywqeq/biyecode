@@ -86,22 +86,29 @@ const hasDataset = computed(() => !!app?.state.dataset.value);
   padding: 6px 14px;
   border: 1px solid var(--glass-border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--glass-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  transition: background 0.25s ease, border-color 0.25s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 .slice-mode button:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--glass-bg-panel);
   border-color: var(--glass-border-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+.slice-mode button:active {
+  transform: translateY(0);
 }
 .slice-mode button.active {
   background: rgba(59, 130, 246, 0.4);
   border-color: rgba(59, 130, 246, 0.6);
   color: #fff;
+  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.25);
 }
 
 .header {

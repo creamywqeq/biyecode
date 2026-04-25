@@ -1,5 +1,6 @@
 /**
  * 主题变量 - 黑夜 / 白昼模式
+ * iOS 风格毛玻璃 + 丝滑过渡
  * 默认跟随系统，支持手动切换
  */
 :root,
@@ -12,47 +13,53 @@
   --landing-tech: rgba(255, 255, 255, 0.4);
   --landing-credit: rgba(255, 255, 255, 0.35);
   --body-bg: linear-gradient(135deg, #0f1419 0%, #1a1f2e 50%, #0d1117 100%);
-  --glass-bg: rgba(255, 255, 255, 0.08);
-  --glass-bg-panel: rgba(30, 35, 50, 0.65);
-  --glass-bg-header: rgba(25, 30, 45, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.15);
-  --glass-border-strong: rgba(255, 255, 255, 0.22);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.25), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
-  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.2);
+  --glass-bg: rgba(255, 255, 255, 0.06);
+  --glass-bg-panel: rgba(28, 32, 48, 0.55);
+  --glass-bg-header: rgba(22, 26, 40, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-border-strong: rgba(255, 255, 255, 0.2);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --glass-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 20px rgba(255, 255, 255, 0.02);
+  --glass-noise-opacity: 0.4;
   --text-primary: rgba(255, 255, 255, 0.95);
-  --text-secondary: rgba(255, 255, 255, 0.75);
-  --text-tertiary: rgba(255, 255, 255, 0.5);
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --text-tertiary: rgba(255, 255, 255, 0.45);
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
-  --glass-radius: 14px;
-  --glass-radius-sm: 10px;
-  --glass-blur: 24px;
-  --glass-blur-strong: 32px;
+  --glass-radius: 16px;
+  --glass-radius-sm: 12px;
+  --glass-blur: 40px;
+  --glass-blur-strong: 56px;
+  color-scheme: dark;
 }
 
 [data-theme="light"] {
-  --landing-bg: linear-gradient(160deg, #ffffff 0%, #fafbff 40%, #ffffff 100%);
-  --landing-bg-grid: rgba(59, 130, 246, 0.06);
+  --landing-bg: linear-gradient(160deg, #f8fafc 0%, #f0f4ff 40%, #ffffff 100%);
+  --landing-bg-grid: rgba(59, 130, 246, 0.05);
   --landing-brand: #2563eb;
   --landing-title: #0f172a;
-  --landing-desc: rgba(15, 23, 42, 0.85);
-  --landing-tech: rgba(15, 23, 42, 0.7);
-  --landing-credit: rgba(15, 23, 42, 0.6);
-  --body-bg: linear-gradient(135deg, #ffffff 0%, #fafbff 50%, #ffffff 100%);
-  --glass-bg: rgba(255, 255, 255, 0.6);
-  --glass-bg-panel: rgba(255, 255, 255, 0.9);
-  --glass-bg-header: rgba(255, 255, 255, 0.95);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  --glass-border-strong: rgba(0, 0, 0, 0.12);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
-  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --landing-desc: rgba(15, 23, 42, 0.8);
+  --landing-tech: rgba(15, 23, 42, 0.6);
+  --landing-credit: rgba(15, 23, 42, 0.5);
+  --body-bg: linear-gradient(135deg, #f8fafc 0%, #f0f4ff 50%, #ffffff 100%);
+  --glass-bg: rgba(255, 255, 255, 0.65);
+  --glass-bg-panel: rgba(255, 255, 255, 0.72);
+  --glass-bg-header: rgba(255, 255, 255, 0.8);
+  --glass-border: rgba(0, 0, 0, 0.06);
+  --glass-border-strong: rgba(0, 0, 0, 0.1);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --glass-shadow-header: 0 4px 24px rgba(0, 0, 0, 0.05);
+  --glass-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 0 20px rgba(255, 255, 255, 0.3);
+  --glass-noise-opacity: 0.25;
   --text-primary: #0f172a;
-  --text-secondary: rgba(15, 23, 42, 0.85);
-  --text-tertiary: rgba(15, 23, 42, 0.7);
+  --text-secondary: rgba(15, 23, 42, 0.75);
+  --text-tertiary: rgba(15, 23, 42, 0.55);
   --accent: #2563eb;
   --accent-hover: #3b82f6;
-  --glass-radius: 14px;
-  --glass-radius-sm: 10px;
-  --glass-blur: 24px;
-  --glass-blur-strong: 32px;
+  --glass-radius: 16px;
+  --glass-radius-sm: 12px;
+  --glass-blur: 40px;
+  --glass-blur-strong: 56px;
+  color-scheme: light;
 }

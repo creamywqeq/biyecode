@@ -127,6 +127,10 @@ async function loadSample(id: 1 | 2 | 3) {
   }
 }
 
+function yieldToUI(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function onFileSelect(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -134,8 +138,11 @@ async function onFileSelect(e: Event) {
   loading.value = true;
   error.value = "";
   try {
-    const buf = await file.arrayBuffer();
-    const { dataset, variableNames } = await DataParser.parse(buf, { filename: file.name });
+    let buf: ArrayBuffer | null = await file.arrayBuffer();
+    await yieldToUI();
+    const { dataset, variableNames } = await DataParser.parse(buf!, { filename: file.name });
+    buf = null; // 释放大缓冲区，让 GC 回收
+    await yieldToUI();
 
     let scalarName = pickDisplayScalar(variableNames, dataset) ?? pickBestScalar(variableNames);
     scalarName = ensureScalar(dataset, variableNames, scalarName);
@@ -152,8 +159,10 @@ async function onFileSelect(e: Event) {
 
     app.state.dataset.value = dataset;
     app.state.activeScalar.value = scalarName;
+    await yieldToUI();
 
     app.renderer.setWireframe(dataset);
+    await yieldToUI();
     app.renderer.setScalarField(dataset, scalarName);
 
     const coords = dataset.nodes.coords;
@@ -191,8 +200,8 @@ async function onFileSelect(e: Event) {
     </div>
     <el-button type="primary" size="small" :loading="loading">
       <label class="file-label">
-        选择 .dat 文件
-        <input type="file" accept=".dat,.tec" hidden @change="onFileSelect" />
+        选择数据文件
+        <input type="file" accept=".dat,.tec,.plt,.csv,.txt" hidden @change="onFileSelect" />
       </label>
     </el-button>
     <div v-if="error" class="error">{{ error }}</div>
@@ -223,21 +232,30 @@ async function onFileSelect(e: Event) {
   border-radius: 10px;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  --el-button-bg-color: rgba(255, 255, 255, 0.12);
+  --el-button-bg-color: var(--glass-bg);
   --el-button-border-color: var(--glass-border);
   --el-button-text-color: var(--text-primary);
+  --el-button-hover-bg-color: var(--glass-bg-panel);
+  --el-button-hover-border-color: var(--glass-border-strong);
+  --el-button-hover-text-color: var(--text-primary);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 .panel :deep(.el-button:hover) {
-  --el-button-bg-color: rgba(255, 255, 255, 0.2);
-  --el-button-border-color: var(--glass-border-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.panel :deep(.el-button:active) {
+  transform: translateY(0);
 }
 .panel :deep(.el-button--primary) {
-  --el-button-bg-color: rgba(59, 130, 246, 0.6);
-  --el-button-border-color: rgba(59, 130, 246, 0.5);
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
   --el-button-text-color: #fff;
+  --el-button-hover-bg-color: var(--accent-hover);
+  --el-button-hover-border-color: var(--accent-hover);
 }
 .panel :deep(.el-button--primary:hover) {
-  --el-button-bg-color: rgba(59, 130, 246, 0.75);
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.3);
 }
 .file-label {
   cursor: pointer;

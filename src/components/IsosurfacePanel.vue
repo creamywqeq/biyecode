@@ -14,7 +14,9 @@ function onApply() {
   const scalar = app.state.activeScalar.value;
   const val = app.state.isosurfaceValue.value;
   if (!ds || !scalar) return;
+  console.time("extractIsosurface");
   app.renderer.setIsosurface(ds, scalar, val);
+  console.timeEnd("extractIsosurface");
 }
 </script>
 
@@ -63,31 +65,33 @@ function onApply() {
   color: var(--text-secondary);
 }
 .iso-input :deep(.el-input__wrapper) {
-  background: rgba(255, 255, 255, 0.12) !important;
+  background: var(--glass-bg) !important;
   box-shadow: 0 0 0 1px var(--glass-border) inset !important;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 .iso-input :deep(.el-input__inner) {
-  color: #ffffff !important;
+  color: var(--text-primary) !important;
   font-size: 16px !important;
   font-weight: 600 !important;
-  -webkit-text-fill-color: #ffffff !important;
+  -webkit-text-fill-color: var(--text-primary) !important;
 }
 .iso-input :deep(.el-input__inner::placeholder) {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-tertiary);
 }
 .iso-input :deep(.el-input-number__decrease),
 .iso-input :deep(.el-input-number__increase) {
-  background: rgba(255, 255, 255, 0.1) !important;
+  background: var(--glass-bg) !important;
   border-color: var(--glass-border) !important;
   color: var(--text-primary) !important;
+  transition: background 0.2s ease;
 }
 .iso-input :deep(.el-input-number__decrease:hover),
 .iso-input :deep(.el-input-number__increase:hover) {
-  background: rgba(255, 255, 255, 0.18) !important;
+  background: var(--glass-bg-panel) !important;
   color: var(--accent) !important;
 }
 .panel :deep(.el-button--primary) {
-  --el-button-bg-color: rgba(59, 130, 246, 0.6);
-  --el-button-border-color: rgba(59, 130, 246, 0.5);
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
 }
 </style>

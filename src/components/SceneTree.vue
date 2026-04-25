@@ -86,13 +86,20 @@ function onCheck(_: TreeNodeData, ctx: { checkedKeys: string[] }) {
   background: transparent;
   color: inherit;
 }
-.panel :deep(.el-tree-node__content:hover) {
-  background: rgba(255, 255, 255, 0.08);
+.panel :deep(.el-tree-node__content) {
   border-radius: 8px;
+  transition: background 0.25s ease;
+}
+.panel :deep(.el-tree-node__content:hover) {
+  background: var(--glass-bg);
+}
+.panel :deep(.el-tree-node__label) {
+  color: var(--text-primary);
 }
 .panel :deep(.el-checkbox__inner) {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--glass-bg);
   border-color: var(--glass-border-strong);
+  transition: background 0.25s ease, border-color 0.25s ease;
 }
 .panel :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
   background: var(--accent);

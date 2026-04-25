@@ -183,14 +183,10 @@ defineEmits<{
   position: absolute;
   z-index: 1;
   inset: 0;
-  background: linear-gradient(
-    135deg,
-    rgba(10, 14, 20, 0.6) 0%,
-    rgba(17, 24, 39, 0.55) 50%,
-    rgba(13, 17, 23, 0.65) 100%
-  );
+  background: var(--landing-bg);
   backdrop-filter: blur(70px) saturate(140%);
   -webkit-backdrop-filter: blur(70px) saturate(140%);
+  transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .landing-grid {

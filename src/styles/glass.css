@@ -1,27 +1,84 @@
 /**
- * 毛玻璃主题 - 科学计算可视化系统
+ * 毛玻璃主题 - iOS 风格科学计算可视化系统
  * 变量由 theme.css 提供（支持黑夜/白昼模式）
  */
 :root {
-  --glass-radius: 14px;
-  --glass-radius-sm: 10px;
-  --glass-blur: 24px;
-  --glass-blur-strong: 32px;
+  --glass-radius: 16px;
+  --glass-radius-sm: 12px;
+  --glass-blur: 40px;
+  --glass-blur-strong: 56px;
 }
 
 .glass-panel {
+  position: relative;
   background: var(--glass-bg-panel);
   backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   border: 1px solid var(--glass-border);
   border-radius: var(--glass-radius);
   box-shadow: var(--glass-shadow);
+  transition:
+    background 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* iOS 风格噪点纹理叠加 */
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--glass-noise-opacity, 0.5);
+}
+
+/* 内发光 */
+.glass-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--glass-inner-glow);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.glass-panel > * {
+  position: relative;
+  z-index: 1;
 }
 
 .glass-header {
+  position: relative;
   background: var(--glass-bg-header);
   backdrop-filter: blur(var(--glass-blur-strong)) saturate(200%);
   -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(200%);
   border-bottom: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow-header);
+  transition:
+    background 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 头部也加噪点 */
+.glass-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--glass-noise-opacity, 0.5);
+}
+
+.glass-header > * {
+  position: relative;
+  z-index: 1;
 }

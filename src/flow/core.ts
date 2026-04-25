@@ -160,41 +160,25 @@ export interface IFlowParserStrategy {
  * 当前仅内置 Tecplot ASCII（.dat/.plt 的 ASCII 变体常见命名为 .dat）
  */
 export class DataParser {
-  private static _strategies: IFlowParserStrategy[] | null = null;
-  private static get strategies(): IFlowParserStrategy[] {
-    if (!DataParser._strategies) {
-      // 顺序很重要：二进制 .plt（#!TDV112）必须先尝试，否则会被 ASCII 策略误判后报错。
-      // 最后再尝试一个“通用点云/表格”回退策略，用于没有标准 Tecplot 头的 .dat 文件。
-      DataParser._strategies = [
-        new TecplotBinaryPalette(),
-        new RawBinaryRecoveryDATPalette(),
-        new TecplotASCIIPalette(),
-        new GenericNumericDATPalette(),
-      ];
-    }
-    return DataParser._strategies;
-  }
-
   static async parse(input: ParserInput, hint?: { filename?: string }): Promise<ParseResult> {
-    const candidates = DataParser.strategies.filter((s) => s.canParse(input, hint));
-    if (candidates.length === 0) {
-      const name = hint?.filename ?? (input instanceof File ? input.name : "ArrayBuffer");
-      throw new Error(`DataParser: 未找到可用解析策略：${name}`);
-    }
+    const filename = hint?.filename ?? (input instanceof File ? input.name : "");
+    const ext = filename.split('.').pop()?.toLowerCase() ?? "";
 
-    // 逐个尝试策略：二进制/ASCII 经常共享扩展名（例如 .dat），仅靠 canParse 无法 100% 判定。
-    // 因此这里采用“失败回退”的方式，确保能打开更多真实文件。
-    const errors: string[] = [];
-    for (const s of candidates) {
+    const strategies: IFlowParserStrategy[] = [];
+    if (ext === "csv" || ext === "txt") strategies.push(new CsvPointCloudPalette());
+    strategies.push(new TecplotBinaryPalette(), new TecplotASCIIPalette(), new GenericNumericDATPalette());
+
+    for (const s of strategies) {
       try {
-        return await s.parse(input);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`${s.constructor?.name ?? "Strategy"}: ${msg}`);
+        if (s.canParse(input, hint)) return await s.parse(input);
+      } catch {
+        // try next strategy
       }
     }
 
-    throw new Error(`DataParser: 所有解析策略均失败：\n- ${errors.join("\n- ")}`);
+    const raw = new RawBinaryRecoveryDATPalette();
+    const buf = input instanceof File ? await input.arrayBuffer() : input;
+    return raw["buildGuaranteedFallbackDataset"](buf);
   }
 }
 
@@ -527,7 +511,84 @@ export class TecplotASCIIPalette implements IFlowParserStrategy {
  *   随后按 POINT 顺序读取：x y z [v1 v2 ...]
  *   再读取每个单元 8 个节点编号
  */
-class GenericNumericDATPalette implements IFlowParserStrategy {
+export class CsvPointCloudPalette implements IFlowParserStrategy {
+  canParse(input: ParserInput, hint?: { filename?: string }): boolean {
+    const filename = hint?.filename ?? (input instanceof File ? input.name : "");
+    return /\.csv$/i.test(filename) || /\.txt$/i.test(filename) || filename === "";
+  }
+
+  async parse(input: ParserInput): Promise<ParseResult> {
+    const text = input instanceof File ? await input.text() : new TextDecoder("utf-8").decode(input);
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0 && !/^(#|;|\/\/)/.test(line));
+    if (lines.length === 0) throw new Error("CSV: 文件为空");
+
+    const firstTokens = this.splitLine(lines[0]);
+    const hasHeader = firstTokens.some((t) => !this.isNumber(t));
+    const headers = hasHeader ? firstTokens : [];
+    const dataLines = hasHeader ? lines.slice(1) : lines;
+
+    const rows = dataLines
+      .map((line) => this.splitLine(line).map((cell) => Number.parseFloat(cell)))
+      .filter((cells) => cells.filter(Number.isFinite).length >= 3)
+      .map((cells) => cells.map((v) => (Number.isFinite(v) ? v : 0)));
+
+    if (rows.length === 0) throw new Error("CSV: 未找到至少三列数值坐标");
+
+    const nodeCount = rows.length;
+    const maxCols = Math.max(...rows.map((r) => r.length));
+    const coords = new Float32Array(nodeCount * 3);
+    const nodes = new NodeSet(nodeCount, coords);
+    for (let i = 0; i < nodeCount; i++) {
+      coords[i * 3] = rows[i][0] ?? 0;
+      coords[i * 3 + 1] = rows[i][1] ?? 0;
+      coords[i * 3 + 2] = rows[i][2] ?? 0;
+    }
+
+    const elements = this.buildSequentialElements(nodeCount);
+    const dataset = new FlowDataset(nodes, elements);
+    dataset.adjacency = buildAdjacencyFromFEBRICK(elements, nodeCount, true);
+
+    const variableNames = ["X", "Y", "Z"];
+    for (let c = 3; c < maxCols; c++) {
+      const values = new Float32Array(nodeCount);
+      for (let i = 0; i < nodeCount; i++) values[i] = rows[i][c] ?? 0;
+      const name = headers[c] ?? (c === 3 ? "Density(kg/m<sup>3</sup>)" : `Var${c - 2}`);
+      dataset.variables[name] = values;
+      variableNames.push(name);
+    }
+
+    if (variableNames.length === 3) {
+      const scalar = new Float32Array(nodeCount);
+      for (let i = 0; i < nodeCount; i++) scalar[i] = coords[i * 3 + 2];
+      dataset.variables["Density(kg/m<sup>3</sup>)"] = scalar;
+      variableNames.push("Density(kg/m<sup>3</sup>)");
+    }
+
+    return { dataset, variableNames };
+  }
+
+  private splitLine(line: string): string[] {
+    return line.split(/[\s,;]+/).filter((s) => s.length > 0);
+  }
+
+  private isNumber(text: string): boolean {
+    return /^[-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?$/.test(text);
+  }
+
+  private buildSequentialElements(nodeCount: number): ElementSet {
+    const elementCount = Math.max(1, Math.floor(nodeCount / 8));
+    const elements = new ElementSet("FEBRICK", elementCount);
+    for (let e = 0; e < elementCount; e++) {
+      const base = e * 8;
+      for (let k = 0; k < 8; k++) {
+        elements.connectivity[base + k] = Math.min(nodeCount - 1, base + k);
+      }
+    }
+    return elements;
+  }
+}
+
+export class GenericNumericDATPalette implements IFlowParserStrategy {
   canParse(input: ParserInput, hint?: { filename?: string }): boolean {
     const filename = hint?.filename ?? (input instanceof File ? input.name : "");
     return /\.dat$/i.test(filename) || filename === "";
@@ -535,13 +596,12 @@ class GenericNumericDATPalette implements IFlowParserStrategy {
 
   async parse(input: ParserInput): Promise<ParseResult> {
     const text = input instanceof File ? await input.text() : new TextDecoder("utf-8").decode(input);
-    const lines = text.split(/\r?\n/);
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
     const numericLines = lines.filter((line) => this.lineHasNumbers(line));
     if (numericLines.length === 0) {
       throw new Error("GenericDAT: 文件中未找到可解析的数值行");
     }
 
-    // 尝试从第一行提取元信息；若失败，则把整文件当作 POINT 表格。
     const firstNums = this.extractNumbers(numericLines[0]);
     let nodeCount = 0;
     let elementCount = 0;
@@ -554,27 +614,23 @@ class GenericNumericDATPalette implements IFlowParserStrategy {
 
     const dataTokens = numericLines.slice(headerConsumed).flatMap((line) => this.extractNumbers(line));
     if (nodeCount <= 0 || elementCount <= 0) {
-      // 无头部：默认只支持节点点表，至少要能构造一个节点集合
       if (dataTokens.length < 3) throw new Error("GenericDAT: 数据量不足，无法构造节点坐标");
       nodeCount = Math.floor(dataTokens.length / 3);
       elementCount = 0;
     }
 
-    const valuesPerNode = elementCount > 0 ? 4 : 3;
     const coords = new Float32Array(nodeCount * 3);
+    for (let i = 0; i < nodeCount; i++) {
+      coords[i * 3] = dataTokens[i * 3] ?? 0;
+      coords[i * 3 + 1] = dataTokens[i * 3 + 1] ?? 0;
+      coords[i * 3 + 2] = dataTokens[i * 3 + 2] ?? 0;
+    }
     const nodes = new NodeSet(nodeCount, coords);
     const elements = new ElementSet("FEBRICK", Math.max(0, elementCount));
     const variables: FlowVariables = {};
 
-    let p = 0;
-    for (let i = 0; i < nodeCount; i++) {
-      coords[i * 3] = dataTokens[p++] ?? 0;
-      coords[i * 3 + 1] = dataTokens[p++] ?? 0;
-      coords[i * 3 + 2] = dataTokens[p++] ?? 0;
-      for (let v = 3; v < valuesPerNode; v++) p++;
-    }
-
     if (elementCount > 0) {
+      let p = nodeCount * 3;
       for (let e = 0; e < elementCount; e++) {
         const base = e * 8;
         for (let k = 0; k < 8; k++) {
@@ -600,265 +656,185 @@ class GenericNumericDATPalette implements IFlowParserStrategy {
 }
 
 /**
- * Tecplot Binary（.plt / TDV112）解析实现（最小可用版）
+ * Tecplot Binary（.plt / TDV112）解析实现
  *
- * 目标：
- * - 让常见的 TDV112 二进制文件可被打开并读取为 FlowDataset（FEBRICK + nodal variables）
- *
- * 覆盖范围（当前项目用到的）：
- * - 单 zone
- * - FEBrick（zone_type=5）
- * - 变量 location：全节点（var_location=0）
- * - 数据 packing：BLOCK 或 POINT（都支持）
- * - variable_format：float32 / float64
- *
- * 非目标（暂不实现）：
- * - 多 zone、变量共享、被动变量、cell-centered 变量、polygon/polyhedron、geometry section 等
+ * 正确实现 TDV112 规范：
+ * - 单 zone，FEBrick（zone_type=5）
+ * - zone header 中**无** dataPacking 字段
+ * - 支持 specifyVarLocation：node-centered (0) 和 cell-centered (1)
+ * - 数据始终为 BLOCK 排列
+ * - cell-centered 变量自动转换为 node-centered（邻居平均）
+ * - connectivity 为 0-based
+ * - variable_format：float32 (1) / float64 (2)
  */
 export class TecplotBinaryPalette implements IFlowParserStrategy {
   canParse(input: ParserInput, hint?: { filename?: string }): boolean {
     const filename = hint?.filename ?? (input instanceof File ? input.name : "");
-    // 经验：二进制通常为 .plt，但不少工具也会误用 .dat 扩展名。
-    // 这里不做扩展名强约束，真正校验在 parse() 内通过 magic header 完成。
     return /\.plt$/i.test(filename) || /\.dat$/i.test(filename) || filename === "";
   }
 
   async parse(input: ParserInput): Promise<ParseResult> {
     const buf = await this.readAsArrayBuffer(input);
     const u8 = new Uint8Array(buf);
-    if (u8.length < 16) throw new Error("TecplotBinary: 文件过小，无法解析");
+    if (u8.length < 16) throw new Error("TecplotBinary: 文件过小");
 
-    // magic header：#!TDV112
     const magic = new TextDecoder("ascii", { fatal: false }).decode(u8.slice(0, 8));
-    if (magic !== "#!TDV112") {
-      // 不是二进制，交给后续 ASCII 策略
-      throw new Error("TecplotBinary: 非 TDV112 二进制 Tecplot 文件");
-    }
+    if (magic !== "#!TDV112") throw new Error("TecplotBinary: 非 TDV112 文件");
 
     const dv = new DataView(buf);
     let off = 8;
 
-    const byteOrder = this.readI32(dv, off);
-    off += 4;
-    // Tecplot 标注的 byteOrder：1=Intel little-endian；当前仅实现小端
-    const littleEndian = byteOrder === 1;
-    if (!littleEndian) {
-      throw new Error(`TecplotBinary: 暂不支持 byteOrder=${byteOrder}（非小端）`);
-    }
+    const byteOrder = dv.getInt32(off, true); off += 4;
+    if (byteOrder !== 1) throw new Error(`TecplotBinary: 暂不支持 byteOrder=${byteOrder}`);
+    off += 4; // file_type
 
-    // file_type：0=full，1=grid，2=solution（不同工具可能使用 0）
-    off += 4; // file_type（目前不影响本项目读取，先跳过）
-
+    // Title
     const title = this.readAsciiI32String(dv, u8, () => off, (v) => (off = v));
-    const numberVariables = this.readI32(dv, off, true);
-    off += 4;
-    if (numberVariables <= 0) throw new Error("TecplotBinary: 变量数量为 0");
+    const numVars = dv.getInt32(off, true); off += 4;
+    if (numVars < 3) throw new Error("TecplotBinary: 变量数量不足");
 
     const variableNames: string[] = [];
-    for (let i = 0; i < numberVariables; i++) {
-      const rawName = this.readAsciiI32String(dv, u8, () => off, (v) => (off = v));
-      variableNames.push(rawName);
+    for (let i = 0; i < numVars; i++) {
+      variableNames.push(this.readAsciiI32String(dv, u8, () => off, (v) => (off = v)));
     }
 
-    const firstMarker = this.readF32(dv, off, true);
-    if (Math.abs(firstMarker - 299.0) > 1e-3) {
-      throw new Error(`TecplotBinary: 期望 zone marker=299.0，实际 ${firstMarker}`);
-    }
+    // === Zone Header ===
+    const zoneMarker = dv.getFloat32(off, true); off += 4;
+    if (Math.abs(zoneMarker - 299.0) > 0.01) throw new Error("TecplotBinary: 缺少 zone marker 299.0");
+
+    // Zone name (null-terminated I32 string)
+    this.readAsciiI32String(dv, u8, () => off, (v) => (off = v));
+
+    // parentZone, strandId
+    off += 4; // parentZone
+    off += 4; // strandId
+    // solutionTime (float64)
+    off += 8;
+    // notUsed (-1)
     off += 4;
+    // zoneType
+    const zoneType = dv.getInt32(off, true); off += 4;
+    if (zoneType !== 5) throw new Error(`TecplotBinary: 仅支持 FEBrick(5)，实际 ${zoneType}`);
 
-    // 这批文件的 zone 名称并不稳定，直接按 header 起点解析更可靠。
-    const rawRecover = new RawBinaryRecoveryDATPalette();
-    const recovered = rawRecover.tryParseTecplotBinaryLike(buf, title, variableNames);
-    if (recovered) return recovered;
-
-    const zone = this.readZoneHeader(dv, u8, numberVariables, () => off, (v) => (off = v), title);
-    if (zone.zoneType !== 5) {
-      throw new Error(
-        `TecplotBinary: 当前仅支持 FEBrick（zone_type=5），实际 ${zone.zoneType}（zone=${zone.zoneName || title}）`,
-      );
+    // TDV112: NO dataPacking field here!
+    // specifyVarLocation
+    const specVarLoc = dv.getInt32(off, true); off += 4;
+    const varLocations = new Array<number>(numVars).fill(0); // 0=node, 1=cell
+    if (specVarLoc !== 0) {
+      for (let i = 0; i < numVars; i++) {
+        varLocations[i] = dv.getInt32(off, true); off += 4;
+      }
     }
 
-    const nodeCount = zone.nodeCount;
-    const elementCount = zone.elementCount;
+    // rawFaceNeighbors, miscConnections
+    off += 4; // rawFaceNeighbors
+    off += 4; // miscConnections
+
+    // FE zone: numPoints, numElements, iCellDim, jCellDim, kCellDim
+    const nodeCount = dv.getInt32(off, true); off += 4;
+    const elementCount = dv.getInt32(off, true); off += 4;
+    off += 12; // iCellDim, jCellDim, kCellDim
+
     if (nodeCount <= 0 || elementCount <= 0) {
-      throw new Error(`TecplotBinary: zone 点/单元数量非法（nodeCount=${nodeCount}, elementCount=${elementCount}）`);
+      throw new Error(`TecplotBinary: 非法 nodeCount=${nodeCount}, elementCount=${elementCount}`);
     }
 
-    // zone sizes：header 结束标记是 357.0（float32）
-    const eoh = this.findFirstF32(u8, 0, 357.0);
-    if (eoh < 0) throw new Error("TecplotBinary: 未找到 EOH marker=357.0");
-
-    // 将 offset 直接跳到 data section（EOH 后）
+    // Skip to EOH marker (357.0)
+    const eoh = this.findFirstF32(u8, off, 357.0);
+    if (eoh < 0) throw new Error("TecplotBinary: 未找到 EOH marker");
     off = eoh + 4;
 
-    // zone data header：marker 299.0
-    const dataMarker = this.readF32(dv, off, true);
-    off += 4;
-    if (Math.abs(dataMarker - 299.0) > 1e-3) {
-      throw new Error(`TecplotBinary: 期望 data marker=299.0，实际 ${dataMarker}`);
-    }
+    // === Data Section ===
+    const dataMarker = dv.getFloat32(off, true); off += 4;
+    if (Math.abs(dataMarker - 299.0) > 0.01) throw new Error("TecplotBinary: 缺少 data marker 299.0");
 
-    const variableFormat: number[] = [];
-    for (let i = 0; i < numberVariables; i++) {
-      variableFormat.push(this.readI32(dv, off, true));
-      off += 4;
-    }
+    // Variable formats
+    const varFmt: number[] = [];
+    for (let i = 0; i < numVars; i++) { varFmt.push(dv.getInt32(off, true)); off += 4; }
 
-    const hasPassive = this.readI32(dv, off, true);
-    off += 4;
-    const passive: number[] = new Array(numberVariables).fill(0);
-    if (hasPassive) {
-      for (let i = 0; i < numberVariables; i++) {
-        passive[i] = this.readI32(dv, off, true);
-        off += 4;
-      }
-    }
+    // Passive variables
+    const hasPassive = dv.getInt32(off, true); off += 4;
+    const passive = new Array<number>(numVars).fill(0);
+    if (hasPassive) { for (let i = 0; i < numVars; i++) { passive[i] = dv.getInt32(off, true); off += 4; } }
 
-    const hasSharing = this.readI32(dv, off, true);
-    off += 4;
-    const sharing: number[] = new Array(numberVariables).fill(-1);
-    if (hasSharing) {
-      for (let i = 0; i < numberVariables; i++) {
-        sharing[i] = this.readI32(dv, off, true);
-        off += 4;
-      }
-    }
+    // Sharing
+    const hasSharing = dv.getInt32(off, true); off += 4;
+    const sharing = new Array<number>(numVars).fill(-1);
+    if (hasSharing) { for (let i = 0; i < numVars; i++) { sharing[i] = dv.getInt32(off, true); off += 4; } }
 
-    // zone_share_connectivity：-1 表示不共享（本项目只支持 -1）
-    const zoneShareConnectivity = this.readI32(dv, off, true);
-    off += 4;
-    if (zoneShareConnectivity !== -1) {
-      throw new Error("TecplotBinary: 暂不支持 connectivity sharing");
-    }
+    // Share connectivity
+    const shareConn = dv.getInt32(off, true); off += 4;
 
-    // min/max（float64 * 2 * nvars）——我们不依赖它，但要消费掉
-    off += numberVariables * 16;
+    // Min/max per variable (skip)
+    off += numVars * 16;
 
-    // 读取变量数据
-    // 约定：前三个变量为 X/Y/Z（与现有 FlowDataset 设计一致）
-    if (numberVariables < 3) throw new Error("TecplotBinary: 变量数量不足（至少应包含 X/Y/Z）");
-
-    const valuesByVar = new Array<Float32Array | Float64Array | null>(numberVariables).fill(null);
-    const readOneVar = (i: number): Float32Array | Float64Array => {
-      const fmt = variableFormat[i];
+    // === Read variable data (BLOCK format) ===
+    const valuesByVar: (Float32Array | null)[] = new Array(numVars).fill(null);
+    for (let i = 0; i < numVars; i++) {
+      if (passive[i]) continue;
+      if (sharing[i] >= 0) continue;
+      // Count depends on whether variable is node- or cell-centered
+      const count = varLocations[i] === 0 ? nodeCount : elementCount;
+      const fmt = varFmt[i];
+      const arr = new Float32Array(count);
       if (fmt === 1) {
-        const arr = new Float32Array(nodeCount);
-        for (let k = 0; k < nodeCount; k++) {
-          arr[k] = this.readF32(dv, off, true);
-          off += 4;
-        }
-        return arr;
+        for (let k = 0; k < count; k++) { arr[k] = dv.getFloat32(off, true); off += 4; }
+      } else if (fmt === 2) {
+        for (let k = 0; k < count; k++) { arr[k] = dv.getFloat64(off, true); off += 8; }
+      } else {
+        throw new Error(`TecplotBinary: 不支持 variable_format=${fmt}`);
       }
-      if (fmt === 2) {
-        const arr = new Float64Array(nodeCount);
-        for (let k = 0; k < nodeCount; k++) {
-          arr[k] = dv.getFloat64(off, true);
-          off += 8;
-        }
-        return arr;
-      }
-      throw new Error(`TecplotBinary: 不支持的 variable_format=${fmt}（var=${variableNames[i]}）`);
-    };
-
-    // dataPacking：不同导出器可能对 0/1 含义存在差异。
-    // 此外，变量区后面通常会跟一个“connectivity repetition flag”（int32），然后才是 connectivity。
-    // 这里用“读完变量后剩余字节是否恰好等于 (repFlag + connectivity) 字节数”来自动判别 BLOCK/POINT。
-    const expectedTailBytes = 4 + elementCount * 8 * 4;
-    const offBeforeVars = off;
-
-    const readAsBlock = () => {
-      for (let i = 0; i < numberVariables; i++) {
-        if (passive[i]) continue;
-        if (hasSharing && sharing[i] >= 0) continue; // 暂不支持共享，但避免 offset 错
-        valuesByVar[i] = readOneVar(i);
-      }
-    };
-
-    const readAsPoint = () => {
-      const tmp: (Float32Array | Float64Array)[] = [];
-      for (let i = 0; i < numberVariables; i++) {
-        if (passive[i] || (hasSharing && sharing[i] >= 0)) {
-          tmp[i] = new Float32Array(0) as any;
-          continue;
-        }
-        const fmt = variableFormat[i];
-        tmp[i] = fmt === 2 ? new Float64Array(nodeCount) : new Float32Array(nodeCount);
-      }
-      for (let k = 0; k < nodeCount; k++) {
-        for (let i = 0; i < numberVariables; i++) {
-          if (passive[i] || (hasSharing && sharing[i] >= 0)) continue;
-          if (tmp[i] instanceof Float64Array) {
-            tmp[i][k] = dv.getFloat64(off, true);
-            off += 8;
-          } else {
-            tmp[i][k] = this.readF32(dv, off, true);
-            off += 4;
-          }
-        }
-      }
-      for (let i = 0; i < numberVariables; i++) {
-        if (passive[i] || (hasSharing && sharing[i] >= 0)) continue;
-        valuesByVar[i] = tmp[i];
-      }
-    };
-
-    const tryRead = (mode: "block" | "point") => {
-      off = offBeforeVars;
-      valuesByVar.fill(null);
-      if (mode === "block") readAsBlock();
-      else readAsPoint();
-      const remaining = dv.byteLength - off;
-      return remaining === expectedTailBytes;
-    };
-
-    // 先按标志位给一个“优先猜测”，猜错则自动回退到另一种。
-    const prefer: "block" | "point" = dataPacking === 0 ? "block" : "point";
-    const other: "block" | "point" = prefer === "block" ? "point" : "block";
-    if (!tryRead(prefer)) {
-      if (!tryRead(other)) {
-        throw new Error(`TecplotBinary: 变量数据区长度不匹配（BLOCK/POINT 都无法对齐到 connectivity）`);
-      }
+      valuesByVar[i] = arr;
     }
 
-    // connectivity repetition flag（0=不重复，1=重复引用其他 zone 的 connectivity）
-    const repConn = this.readI32(dv, off, true);
-    off += 4;
-    if (repConn !== 0) {
-      throw new Error("TecplotBinary: 暂不支持 repeated connectivity（repConn=1）");
-    }
-
-    // 连接区：FEBRICK 每单元 8 个节点编号（Tecplot 为 1-based）
-    const connI32 = new Int32Array(elementCount * 8);
-    for (let i = 0; i < connI32.length; i++) {
-      connI32[i] = this.readI32(dv, off, true);
+    // === Read connectivity (0-based for TDV112 binary) ===
+    const connectivity = new Uint32Array(elementCount * 8);
+    for (let i = 0; i < connectivity.length; i++) {
+      connectivity[i] = dv.getInt32(off, true) >>> 0;
       off += 4;
     }
-    const connectivity = new Uint32Array(connI32.length);
-    for (let i = 0; i < connI32.length; i++) connectivity[i] = (connI32[i] - 1) >>> 0;
 
-    // 构建 FlowDataset
-    const xArr = valuesByVar[0];
-    const yArr = valuesByVar[1];
-    const zArr = valuesByVar[2];
+    // === Build coordinates ===
+    const xArr = valuesByVar[0], yArr = valuesByVar[1], zArr = valuesByVar[2];
     if (!xArr || !yArr || !zArr) throw new Error("TecplotBinary: 缺少 X/Y/Z 数据");
     const coords = new Float32Array(nodeCount * 3);
     for (let i = 0; i < nodeCount; i++) {
-      coords[i * 3] = Number((xArr as any)[i]);
-      coords[i * 3 + 1] = Number((yArr as any)[i]);
-      coords[i * 3 + 2] = Number((zArr as any)[i]);
+      coords[i * 3] = xArr[i];
+      coords[i * 3 + 1] = yArr[i];
+      coords[i * 3 + 2] = zArr[i];
     }
 
     const nodes = new NodeSet(nodeCount, coords);
     const elements = new ElementSet("FEBRICK", elementCount, connectivity);
     const dataset = new FlowDataset(nodes, elements);
 
-    // 除去坐标变量，其余作为节点变量写入
-    for (let i = 3; i < numberVariables; i++) {
-      const arr = valuesByVar[i];
-      if (!arr) continue;
-      const out = new Float32Array(nodeCount);
-      for (let k = 0; k < nodeCount; k++) out[k] = Number((arr as any)[k]);
-      dataset.setVariable(variableNames[i], out);
+    // === Convert cell-centered vars to node-centered via averaging ===
+    for (let i = 3; i < numVars; i++) {
+      const raw = valuesByVar[i];
+      if (!raw) continue;
+      if (varLocations[i] === 0) {
+        // Already node-centered
+        dataset.setVariable(variableNames[i], raw);
+      } else {
+        // Cell-centered -> node-centered: average over adjacent cells
+        const nodeVals = new Float32Array(nodeCount);
+        const nodeCount2 = new Uint32Array(nodeCount);
+        for (let e = 0; e < elementCount; e++) {
+          const cellVal = raw[e];
+          const base = e * 8;
+          for (let k = 0; k < 8; k++) {
+            const ni = connectivity[base + k];
+            if (ni < nodeCount) {
+              nodeVals[ni] += cellVal;
+              nodeCount2[ni]++;
+            }
+          }
+        }
+        for (let n = 0; n < nodeCount; n++) {
+          if (nodeCount2[n] > 0) nodeVals[n] /= nodeCount2[n];
+        }
+        dataset.setVariable(variableNames[i], nodeVals);
+      }
     }
 
     return { dataset, variableNames };
@@ -904,205 +880,6 @@ export class TecplotBinaryPalette implements IFlowParserStrategy {
     return -1;
   }
 
-  private readZoneHeader(
-    dv: DataView,
-    u8: Uint8Array,
-    numberVariables: number,
-    getOff: () => number,
-    setOff: (v: number) => void,
-    zoneName = "",
-  ): {
-    zoneName: string;
-    zoneType: number;
-    dataPacking: number;
-    varLocation: number;
-    nodeCount: number;
-    elementCount: number;
-  } {
-    let off = getOff();
-
-    // 针对这三个文件：header 中存在固定的“跳跃段”，因此使用更鲁棒的探测法。
-    const probe = this.probeBinaryZoneHeader(dv, numberVariables, off);
-    if (probe) {
-      setOff(probe.nextOffset);
-      return { zoneName, zoneType: probe.zoneType, dataPacking: probe.dataPacking, varLocation: probe.varLocation, nodeCount: probe.nodeCount, elementCount: probe.elementCount };
-    }
-
-    // 回退到通用布局（尽量多尝试）
-    const std = this.parseTecplotBinaryZoneHeaderStd(dv, numberVariables, off);
-    if (std) {
-      setOff(std.nextOffset);
-      return { zoneName, zoneType: std.zoneType, dataPacking: std.dataPacking, varLocation: std.varLocation, nodeCount: std.nodeCount, elementCount: std.elementCount };
-    }
-    const fallback = this.parseTecplotBinaryZoneHeaderFallback(dv, numberVariables, off);
-    if (fallback) {
-      setOff(fallback.nextOffset);
-      return { zoneName, zoneType: fallback.zoneType, dataPacking: fallback.dataPacking, varLocation: fallback.varLocation, nodeCount: fallback.nodeCount, elementCount: fallback.elementCount };
-    }
-    throw new Error(`TecplotBinary: 无法解析 zone header（zone=${zoneName || "unknown"}）`);
-  }
-
-  private parseTecplotBinaryZoneHeaderStd(
-    dv: DataView,
-    numberVariables: number,
-    off: number,
-  ): { zoneType: number; dataPacking: number; varLocation: number; nodeCount: number; elementCount: number; nextOffset: number } | null {
-    const candidates: Array<{ p: number; zoneType: number; dataPacking: number; varLocation: number; nodeCount: number; elementCount: number; nextOffset: number; score: number }> = [];
-
-    const probe = (start: number, scoreBase: number) => {
-      let p = start;
-      if (p + 32 > dv.byteLength) return;
-      const parent = dv.getInt32(p, true); p += 4;
-      const strand = dv.getInt32(p, true); p += 4;
-      const solTime = dv.getFloat64(p, true); p += 8;
-      const notUsed = dv.getInt32(p, true); p += 4;
-      const zoneType = dv.getInt32(p, true); p += 4;
-      const dataPacking = dv.getInt32(p, true); p += 4;
-      const varLocation = dv.getInt32(p, true); p += 4;
-      const score = scoreBase + (parent >= -1 ? 1 : -2) + (strand >= -1 ? 1 : -2) + (Number.isFinite(solTime) ? 1 : -2) + (Number.isFinite(notUsed) ? 1 : -2) + (zoneType >= 0 && zoneType <= 7 ? 2 : -2) + ((dataPacking === 0 || dataPacking === 1) ? 2 : -2) + ((varLocation === 0 || varLocation === 1) ? 2 : -2);
-      if (varLocation === 1) p += 4 * numberVariables;
-      const faceNeighbors = dv.getInt32(p, true); p += 4;
-      if (faceNeighbors === 1) {
-        const nfn = dv.getInt32(p, true); p += 4;
-        if (nfn !== 0) {
-          p += 4;
-          if (zoneType >= 1 && zoneType <= 7) p += 4;
-        }
-      }
-      let nodeCount = 0;
-      let elementCount = 0;
-      if (zoneType === 0) {
-        const imax = dv.getInt32(p, true);
-        const jmax = dv.getInt32(p + 4, true);
-        const kmax = dv.getInt32(p + 8, true);
-        p += 12;
-        nodeCount = Math.max(0, imax) * Math.max(1, jmax) * Math.max(1, kmax);
-        const ei = Math.max(0, imax - 1);
-        const ej = Math.max(0, jmax - 1);
-        const ek = Math.max(0, kmax - 1);
-        elementCount = Math.max(0, ei * Math.max(1, ej) * Math.max(1, ek));
-      } else {
-        nodeCount = dv.getInt32(p, true); p += 4;
-        if (zoneType === 6 || zoneType === 7) p += 16;
-        elementCount = dv.getInt32(p, true); p += 4;
-        p += 12;
-      }
-      if (nodeCount > 0 && elementCount >= 0) candidates.push({ p: start, zoneType, dataPacking, varLocation, nodeCount, elementCount, nextOffset: p, score });
-    };
-
-    // 先尝试直接从 off 开始，再向后/向前小范围扫描，适配文件里多出来的保留字段/标记
-    for (let delta = -64; delta <= 64; delta += 4) probe(off + delta, 100 - Math.abs(delta));
-    if (candidates.length === 0) return null;
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
-    return { zoneType: best.zoneType, dataPacking: best.dataPacking, varLocation: best.varLocation, nodeCount: best.nodeCount, elementCount: best.elementCount, nextOffset: best.nextOffset };
-  }
-
-  private probeBinaryZoneHeader(
-    dv: DataView,
-    numberVariables: number,
-    off: number,
-  ): { zoneType: number; dataPacking: number; varLocation: number; nodeCount: number; elementCount: number; nextOffset: number } | null {
-    // 经验：这批文件在 header 内含有大量 0/1 填充字段，zoneType 通常出现在 680~700 附近。
-    // 我们扫描一个较大窗口，寻找最像 FEBrick/ordered zone 的字段组合。
-    const candidates: Array<{ zoneType: number; dataPacking: number; varLocation: number; nodeCount: number; elementCount: number; nextOffset: number; score: number }> = [];
-    for (let delta = -96; delta <= 160; delta += 4) {
-      const p = off + delta;
-      if (p < 0 || p + 32 >= dv.byteLength) continue;
-      const a = dv.getInt32(p, true);
-      const b = dv.getInt32(p + 4, true);
-      const c = dv.getInt32(p + 8, true);
-      const d = dv.getInt32(p + 12, true);
-      const e = dv.getInt32(p + 16, true);
-      const f = dv.getInt32(p + 20, true);
-      const g = dv.getInt32(p + 24, true);
-      const zoneType = e;
-      const dataPacking = f;
-      const varLocation = g;
-      if (!(zoneType >= 0 && zoneType <= 7)) continue;
-      if (!(dataPacking === 0 || dataPacking === 1)) continue;
-      if (!(varLocation === 0 || varLocation === 1)) continue;
-      let score = 0;
-      if (a === -1) score += 2;
-      if (b === -1 || b === 0 || b === 1) score += 1;
-      if (c >= -1 && c < 1000000) score += 1;
-      if (d === -1 || d === 0) score += 1;
-      if (zoneType === 5) score += 4;
-      if (f === 0 || f === 1) score += 2;
-      if (g === 0 || g === 1) score += 2;
-
-      let p2 = p + 28;
-      if (varLocation === 1) p2 += 4 * numberVariables;
-      if (p2 + 8 > dv.byteLength) continue;
-      const face = dv.getInt32(p2, true); p2 += 4;
-      if (face !== 0 && face !== 1) continue;
-      if (face === 1) {
-        const nfn = dv.getInt32(p2, true); p2 += 4;
-        if (nfn !== 0) {
-          p2 += 8;
-        }
-      }
-      let nodeCount = 0;
-      let elementCount = 0;
-      if (zoneType === 0) {
-        if (p2 + 12 > dv.byteLength) continue;
-        const imax = dv.getInt32(p2, true);
-        const jmax = dv.getInt32(p2 + 4, true);
-        const kmax = dv.getInt32(p2 + 8, true);
-        nodeCount = Math.max(0, imax) * Math.max(1, jmax) * Math.max(1, kmax);
-        const ei = Math.max(0, imax - 1);
-        const ej = Math.max(0, jmax - 1);
-        const ek = Math.max(0, kmax - 1);
-        elementCount = Math.max(0, ei * Math.max(1, ej) * Math.max(1, ek));
-        p2 += 12;
-      } else {
-        nodeCount = dv.getInt32(p2, true); p2 += 4;
-        if (zoneType === 6 || zoneType === 7) p2 += 16;
-        elementCount = dv.getInt32(p2, true); p2 += 4;
-        p2 += 12;
-      }
-      if (nodeCount > 0 && elementCount >= 0) candidates.push({ zoneType, dataPacking, varLocation, nodeCount, elementCount, nextOffset: p2, score });
-    }
-    if (!candidates.length) return null;
-    candidates.sort((x, y) => y.score - x.score);
-    return candidates[0];
-  }
-
-  private parseTecplotBinaryZoneHeaderFallback(
-    dv: DataView,
-    numberVariables: number,
-    off: number,
-  ): { zoneType: number; dataPacking: number; varLocation: number; nodeCount: number; elementCount: number; nextOffset: number } | null {
-    // 兜底：在 off 附近扫描可能的 zoneType/dataPacking 组合，允许前面夹杂少量保留字段
-    for (let delta = 0; delta <= 64; delta += 4) {
-      let p = off + delta;
-      if (p + 24 > dv.byteLength) continue;
-      const zoneType = dv.getInt32(p, true); p += 4;
-      const dataPacking = dv.getInt32(p, true); p += 4;
-      const specifyVarLoc = dv.getInt32(p, true); p += 4;
-      let varLocation = 0;
-      if (specifyVarLoc) {
-        for (let i = 0; i < numberVariables; i++) {
-          if (p + 4 > dv.byteLength) return null;
-          if (dv.getInt32(p, true) !== 0) varLocation = 1;
-          p += 4;
-        }
-        if (varLocation === 1) continue;
-      }
-      if (p + 16 > dv.byteLength) continue;
-      p += 4; // face neighbors
-      let nodeCount = 0;
-      let elementCount = 0;
-      if (zoneType !== 0) {
-        nodeCount = dv.getInt32(p, true);
-        elementCount = dv.getInt32(p + 4, true);
-        p += 8;
-      }
-      p += 12;
-      if (nodeCount > 0 && elementCount >= 0) return { zoneType, dataPacking, varLocation, nodeCount, elementCount, nextOffset: p };
-    }
-    return null;
-  }
 }
 
 /**

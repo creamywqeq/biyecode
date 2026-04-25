@@ -25,26 +25,23 @@ const BODY_BG: Record<Theme, string> = {
 };
 
 function handleThemeClick() {
-  const newTheme: Theme = theme.value === "dark" ? "light" : "dark";
-  if (entered.value) {
-    toggle();
-    return;
-  }
   if (transitioning.value) return;
+  const newTheme: Theme = theme.value === "dark" ? "light" : "dark";
   const btn = themeToggleRef.value;
-  if (!btn || !overlayRef.value) {
+  const overlay = overlayRef.value;
+
+  if (!btn || !overlay) {
     toggle();
     return;
   }
+
   transitioning.value = true;
   toTheme.value = newTheme;
-  theme.value = newTheme;
 
   const rect = btn.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
 
-  const overlay = overlayRef.value;
   overlay.style.setProperty("--clip-x", `${x}px`);
   overlay.style.setProperty("--clip-y", `${y}px`);
   overlay.style.background = BODY_BG[newTheme];
@@ -57,12 +54,18 @@ function handleThemeClick() {
     });
   });
 
-  overlay.ontransitionend = (e: TransitionEvent) => {
+  const onEnd = (e: TransitionEvent) => {
     if (e.propertyName !== "clip-path") return;
-    overlay.ontransitionend = null;
-    overlay.classList.remove("theme-overlay--visible", "theme-overlay--expanded");
-    transitioning.value = false;
+    overlay.removeEventListener("transitionend", onEnd);
+    // Apply theme AFTER circle fully covers the screen
+    theme.value = newTheme;
+    // Brief delay then fade out overlay
+    requestAnimationFrame(() => {
+      overlay.classList.remove("theme-overlay--visible", "theme-overlay--expanded");
+      transitioning.value = false;
+    });
   };
+  overlay.addEventListener("transitionend", onEnd);
 }
 </script>
 
@@ -77,7 +80,7 @@ function handleThemeClick() {
       <span v-if="displayIconTheme === 'light'">☀</span>
       <span v-else>🌙</span>
     </button>
-    <div v-if="!entered" ref="overlayRef" class="theme-overlay"></div>
+    <div ref="overlayRef" class="theme-overlay"></div>
     <div class="content-stack">
       <Transition name="page" mode="out-in">
         <LandingPage v-if="!entered" @enter="entered = true" />
@@ -99,8 +102,17 @@ body,
 }
 body {
   background: var(--body-bg);
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-  transition: background 0.4s ease;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 全局颜色和文字过渡 */
+*, *::before, *::after {
+  transition-property: color, background-color, border-color, box-shadow, opacity;
+  transition-duration: 0.45s;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .app-root {
@@ -116,6 +128,7 @@ body {
   height: 100%;
 }
 
+/* ---- 圆形展开遮罩：主题切换动画 ---- */
 .theme-overlay {
   position: fixed;
   inset: 0;
@@ -125,10 +138,13 @@ body {
   --clip-y: 50%;
   opacity: 0;
   clip-path: circle(0 at var(--clip-x) var(--clip-y));
-  transition: clip-path 0.85s cubic-bezier(0.33, 1, 0.68, 1), opacity 0.12s ease;
-  will-change: clip-path;
+  transition:
+    clip-path 0.7s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.15s ease;
+  will-change: clip-path, opacity;
   transform: translateZ(0);
   backface-visibility: hidden;
+  contain: strict;
 }
 .theme-overlay.theme-overlay--visible {
   opacity: 1;
@@ -142,43 +158,64 @@ body {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(59, 130, 246, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(59, 130, 246, 0.04) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
   pointer-events: none;
 }
 
+/* ---- iOS 风格主题切换按钮 ---- */
 .theme-toggle {
   position: fixed;
-  top: 72px;
+  top: 64px;
   right: 16px;
   z-index: 9999;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg-panel);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   color: var(--text-primary);
-  font-size: 18px;
+  font-size: 19px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s, box-shadow 0.2s, color 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), var(--glass-inner-glow);
+  transition:
+    transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.35s ease,
+    background 0.45s ease,
+    border-color 0.45s ease;
 }
 .theme-toggle:hover {
-  transform: scale(1.05);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  transform: scale(1.12);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18), 0 0 0 2px var(--accent);
+}
+.theme-toggle:active {
+  transform: scale(0.92);
+}
+.theme-toggle span {
+  display: inline-block;
+  transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.theme-toggle:hover span {
+  transform: rotate(20deg);
 }
 
+/* ---- 页面过渡 ---- */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.page-enter-from,
+.page-enter-from {
+  opacity: 0;
+  transform: scale(0.98) translateY(8px);
+}
 .page-leave-to {
   opacity: 0;
+  transform: scale(0.98) translateY(-8px);
 }
 </style>

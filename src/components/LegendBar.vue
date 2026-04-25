@@ -70,17 +70,24 @@ const range = computed({
 }
 
 .legend :deep(.el-slider__runway) {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
+  background: var(--glass-bg);
+  border-radius: 6px;
 }
 .legend :deep(.el-slider__bar) {
   background: linear-gradient(90deg, rgba(59, 130, 246, 0.6), rgba(239, 68, 68, 0.6));
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .legend :deep(.el-slider__button) {
-  border: 2px solid rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid var(--accent);
+  background: var(--glass-bg-header);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+}
+.legend :deep(.el-slider__button:hover) {
+  transform: scale(1.15);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
 }
 </style>
 

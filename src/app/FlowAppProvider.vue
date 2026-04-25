@@ -6,6 +6,9 @@ import { FlowRenderer, createTurboLUTTexture } from "../renderer/FlowRenderer";
 import { VtkSlicer } from "../algorithms/VtkSlicer";
 import { ProbeInteractor, buildHexTriToCell } from "../interaction/ProbeInteractor";
 import type { ProbeEvents } from "../interaction/ProbeInteractor";
+import { extractExternalSurface } from "../algorithms/SurfaceExtractor";
+
+const LARGE_MESH_THRESHOLD = 1000;
 
 /**
  * FlowAppProvider：把 3D 引擎与算法服务注入到 Vue 组件树
@@ -73,10 +76,12 @@ onMounted(() => {
   );
 
   // 当切片平面变化时，触发 vtk cutter 重新计算
+  // 对大网格跳过切片（遍历全部单元太慢）
   watch(
     () => [state.dataset.value, state.slicePlane.value, state.activeScalar.value] as const,
     ([ds, plane, scalarName]) => {
       if (!ds) return;
+      if (ds.elements.elementCount > LARGE_MESH_THRESHOLD) { slicer.clear(); return; }
       if (!plane || !Number.isFinite(plane.origin[0]) || !Number.isFinite(plane.origin[1]) || !Number.isFinite(plane.origin[2])) return;
       if (scalarName) {
         try {
@@ -123,7 +128,16 @@ onMounted(() => {
       if (!ds || !scalarName) return;
       const mesh = renderer.getScalarMesh();
       if (!mesh) return;
-      const triToCell = buildHexTriToCell(ds.elements.elementCount);
+
+      // For large meshes using surface extraction, build triToCell from boundary faces
+      let triToCell: Uint32Array;
+      if (ds.elements.elementCount > LARGE_MESH_THRESHOLD) {
+        const surface = extractExternalSurface(ds);
+        triToCell = surface.triToCell;
+      } else {
+        triToCell = buildHexTriToCell(ds.elements.elementCount);
+      }
+
       const probe = new ProbeInteractor(
         renderer.renderer.domElement,
         renderer.camera,
