@@ -12,6 +12,70 @@ if (!app) throw new Error("DataLoadPanel: 缺少 FlowAppProvider");
 const loading = ref(false);
 const error = ref("");
 
+function pickBestScalar(variableNames: string[]): string {
+  const names = variableNames.filter((v) => !["X", "Y", "Z"].includes(v));
+  const keywords = ["Pressure", "Temp", "Temperature", "Ma", "Mach", "Density", "P", "U", "V", "W"];
+  for (const key of keywords) {
+    const hit = names.find((n) => n.toLowerCase().includes(key.toLowerCase()));
+    if (hit) return hit;
+  }
+  return names[0] ?? variableNames[3] ?? variableNames[0] ?? "";
+}
+
+function ensureScalar(dataset: any, variableNames: string[], preferred?: string): string {
+  const candidates = [preferred, ...variableNames, ...Object.keys(dataset.variables ?? {})].filter(Boolean) as string[];
+  for (const name of candidates) {
+    if (dataset.variables?.[name]) return name;
+  }
+  const fallback = Object.values(dataset.variables ?? {}).find((v: any) => v instanceof Float32Array) as Float32Array | undefined;
+  if (fallback) {
+    const key = preferred && preferred.length > 0 ? preferred : "Density(kg/m<sup>3</sup>)";
+    dataset.variables[key] = fallback;
+    return key;
+  }
+  const n = dataset.nodes?.nodeCount ?? 0;
+  if (n > 0) {
+    const synthetic = new Float32Array(n);
+    for (let i = 0; i < n; i++) synthetic[i] = dataset.nodes.coords[i * 3 + 2] ?? 0;
+    dataset.variables["Density(kg/m<sup>3</sup>)"] = synthetic;
+    return "Density(kg/m<sup>3</sup>)";
+  }
+  return preferred ?? "";
+}
+
+function normalizeVarName(name: string): string {
+  return name
+    .replace(/<\s*sup\s*>/gi, "^")
+    .replace(/<\s*\/\s*sup\s*>/gi, "")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, "")
+    .replace(/\(kg\/m3\)/i, "(kg/m^3)")
+    .replace(/\(kg\/m\^3\)/i, "(kg/m^3)")
+    .toLowerCase();
+}
+
+function pickDisplayScalar(variableNames: string[], dataset: any): string | undefined {
+  const aliases = new Map<string, string>();
+  for (const name of variableNames) aliases.set(normalizeVarName(name), name);
+
+  const preferred = [
+    "Density(kg/m^3)",
+    "Pressure(N/m^2)",
+    "Temperature(K)",
+    "Ma(1)",
+    "MiuL(N*s/m^2)",
+  ];
+  for (const p of preferred) {
+    const hit = aliases.get(normalizeVarName(p));
+    if (hit && dataset.variables[hit]) return hit;
+  }
+
+  const nonXYZ = variableNames.find((v) => !["X", "Y", "Z"].includes(v) && dataset.variables[v]);
+  return nonXYZ ?? variableNames.find((v) => dataset.variables[v]);
+}
+
 async function loadSample(id: 1 | 2 | 3) {
   loading.value = true;
   error.value = "";
@@ -21,10 +85,14 @@ async function loadSample(id: 1 | 2 | 3) {
     const buf = await res.arrayBuffer();
     const { dataset, variableNames } = await DataParser.parse(buf, { filename: `sample${id}.dat` });
 
-    // 选第一个非坐标变量作为云图标量（如 P）
-    const scalarName = variableNames.find((v) => !["X", "Y", "Z"].includes(v)) ?? variableNames[3];
-    const raw = dataset.variables[scalarName];
-    if (!raw) throw new Error(`变量 ${scalarName} 不存在`);
+    let scalarName = pickDisplayScalar(variableNames, dataset) ?? pickBestScalar(variableNames);
+    scalarName = ensureScalar(dataset, variableNames, scalarName);
+    let raw = dataset.variables[scalarName] ?? Object.values(dataset.variables)[0];
+    if (!raw) {
+      scalarName = ensureScalar(dataset, variableNames, scalarName);
+      raw = dataset.variables[scalarName] ?? Object.values(dataset.variables)[0];
+    }
+    if (!raw) throw new Error(`变量 ${scalarName || "<unknown>"} 不存在`);
 
     const { min, max } = DataNormalizer.minMax(raw);
     const norm = DataNormalizer.normalizeTo01(raw, min, max);
@@ -69,9 +137,14 @@ async function onFileSelect(e: Event) {
     const buf = await file.arrayBuffer();
     const { dataset, variableNames } = await DataParser.parse(buf, { filename: file.name });
 
-    const scalarName = variableNames.find((v) => !["X", "Y", "Z"].includes(v)) ?? variableNames[3];
-    const raw = dataset.variables[scalarName];
-    if (!raw) throw new Error(`变量 ${scalarName} 不存在`);
+    let scalarName = pickDisplayScalar(variableNames, dataset) ?? pickBestScalar(variableNames);
+    scalarName = ensureScalar(dataset, variableNames, scalarName);
+    let raw = dataset.variables[scalarName] ?? Object.values(dataset.variables)[0];
+    if (!raw) {
+      scalarName = ensureScalar(dataset, variableNames, scalarName);
+      raw = dataset.variables[scalarName] ?? Object.values(dataset.variables)[0];
+    }
+    if (!raw) throw new Error(`变量 ${scalarName || "<unknown>"} 不存在`);
 
     const { min, max } = DataNormalizer.minMax(raw);
     const norm = DataNormalizer.normalizeTo01(raw, min, max);

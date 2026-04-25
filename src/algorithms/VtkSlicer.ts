@@ -144,20 +144,25 @@ function hexPlaneSlice(
     for (const [a, b] of HEX_EDGES) {
       const d0 = dists[a];
       const d1 = dists[b];
+      if (!Number.isFinite(d0) || !Number.isFinite(d1)) continue;
       if (d0 * d1 > 0) continue; // 同侧，不交
 
-      const t = d0 === d1 ? 0.5 : -d0 / (d1 - d0);
+      const denom = d1 - d0;
+      if (!Number.isFinite(denom) || Math.abs(denom) < 1e-12) continue;
+      const t = -d0 / denom;
+      if (!Number.isFinite(t) || t < -1e-6 || t > 1 + 1e-6) continue;
+      const tt = Math.max(0, Math.min(1, t));
       const v0 = verts[a];
       const v1 = verts[b];
       pts.push([
-        v0[0] + t * (v1[0] - v0[0]),
-        v0[1] + t * (v1[1] - v0[1]),
-        v0[2] + t * (v1[2] - v0[2]),
+        v0[0] + tt * (v1[0] - v0[0]),
+        v0[1] + tt * (v1[1] - v0[1]),
+        v0[2] + tt * (v1[2] - v0[2]),
       ]);
-      if (scalarArr) ptScalars.push(vertScalars[a] + t * (vertScalars[b] - vertScalars[a]));
+      if (scalarArr) ptScalars.push(vertScalars[a] + tt * (vertScalars[b] - vertScalars[a]));
     }
 
-    if (pts.length < 3) continue;
+    if (pts.length < 3 || !pts.every((p) => p.every(Number.isFinite))) continue;
 
     // 将交点按平面内顺序排列（绕平面法向）
     const sArr = scalarArr ? ptScalars : pts.map(() => 0);

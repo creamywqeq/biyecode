@@ -77,14 +77,23 @@ onMounted(() => {
     () => [state.dataset.value, state.slicePlane.value, state.activeScalar.value] as const,
     ([ds, plane, scalarName]) => {
       if (!ds) return;
+      if (!plane || !Number.isFinite(plane.origin[0]) || !Number.isFinite(plane.origin[1]) || !Number.isFinite(plane.origin[2])) return;
       if (scalarName) {
-        slicer.slice(ds, plane, {
-          colorByScalar: scalarName,
-          lutTexture: sharedLUT,
-          opacity: 0.9,
-        });
+        try {
+          slicer.slice(ds, plane, {
+            colorByScalar: scalarName,
+            lutTexture: sharedLUT,
+            opacity: 0.9,
+          });
+        } catch {
+          slicer.clear();
+        }
       } else {
-        slicer.slice(ds, plane);
+        try {
+          slicer.slice(ds, plane);
+        } catch {
+          slicer.clear();
+        }
       }
     },
     { deep: true },
