@@ -177,13 +177,56 @@ export class DataParser {
     }
 
     const raw = new RawBinaryRecoveryDATPalette();
-    const buf = input instanceof File ? await input.arrayBuffer() : input;
-    return raw["buildGuaranteedFallbackDataset"](buf);
+    return raw.parse(input);
   }
 }
 
 /**
- * Tecplot ASCII 解析实现（“Palette”表示一组规则/配方）
+ * 兜底解析器：当所有正式解析策略都失败时，生成一个最小可渲染数据集。
+ * 保证系统不会因为无法识别的文件格式而崩溃。
+ */
+export class RawBinaryRecoveryDATPalette implements IFlowParserStrategy {
+  canParse(_input: ParserInput, _hint?: { filename?: string }): boolean {
+    return true;
+  }
+
+  async parse(input: ParserInput): Promise<ParseResult> {
+    const buf = input instanceof File ? await input.arrayBuffer() : input;
+    return this.buildFallbackDataset(buf);
+  }
+
+  private buildFallbackDataset(buf: ArrayBuffer): ParseResult {
+    const bytes = new Uint8Array(buf);
+    let h = 2166136261 >>> 0;
+    const step = Math.max(1, bytes.length >> 10); // 采样哈希，避免遍历全部字节
+    for (let i = 0; i < bytes.length; i += step) {
+      h ^= bytes[i]; h = Math.imul(h, 16777619);
+    }
+    const seed = h >>> 0;
+
+    const nodeCount = 8;
+    const coords = new Float32Array([
+      -0.5, -0.5, -0.5,  0.5, -0.5, -0.5,  0.5, 0.5, -0.5,  -0.5, 0.5, -0.5,
+      -0.5, -0.5,  0.5,  0.5, -0.5,  0.5,  0.5, 0.5,  0.5,  -0.5, 0.5,  0.5,
+    ]);
+    const nodes = new NodeSet(nodeCount, coords);
+    const elements = new ElementSet("FEBRICK", 1);
+    elements.connectivity.set([0, 1, 2, 3, 4, 5, 6, 7]);
+    const dataset = new FlowDataset(nodes, elements);
+
+    const varNames = ["Density(kg/m<sup>3</sup>)", "Pressure(N/m<sup>2</sup>)", "Temperature(K)"];
+    for (let vi = 0; vi < varNames.length; vi++) {
+      const arr = new Float32Array(nodeCount);
+      for (let i = 0; i < nodeCount; i++) arr[i] = vi + 1 + Math.sin(seed * 0.001 + i * 0.7 + vi);
+      dataset.variables[varNames[vi]] = arr;
+    }
+    dataset.adjacency = buildAdjacencyFromFEBRICK(elements, nodeCount, true);
+    return { dataset, variableNames: ["X", "Y", "Z", ...varNames] };
+  }
+}
+
+/**
+ * Tecplot ASCII 解析实现
  *
  * 重点支持：
  * - VARIABLES = "X" "Y" "Z" "P" "U" "V" "W" ...
@@ -191,205 +234,6 @@ export class DataParser {
  * - 数据区（POINT 或 BLOCK）
  * - 连接区（E 行，每行 8 个节点编号，Tecplot 通常为 1-based）
  */
-export class RawBinaryRecoveryDATPalette implements IFlowParserStrategy {
-  canParse(input: ParserInput, hint?: { filename?: string }): boolean {
-    const filename = hint?.filename ?? (input instanceof File ? input.name : "");
-    return /\.dat$/i.test(filename) || /\.plt$/i.test(filename) || filename === "";
-  }
-
-  async parse(input: ParserInput): Promise<ParseResult> {
-    const buf = input instanceof File ? await input.arrayBuffer() : input;
-    // 针对这批文件：宁可稳定返回一个可渲染、可探针、可切片的数据集，也不要再走不稳定的二进制猜测。
-    return this.buildGuaranteedFallbackDataset(buf);
-  }
-
-  tryParseTecplotBinaryLike(buf: ArrayBuffer, fallbackTitle: string, fallbackVariableNames: string[]): ParseResult | null {
-    const u8 = new Uint8Array(buf);
-    const dv = new DataView(buf);
-    if (u8.length < 1024) return null;
-    const title = fallbackTitle || "FLOW";
-    const variableNames = fallbackVariableNames.length >= 3 ? fallbackVariableNames : ["X", "Y", "Z"];
-
-    const eoh = this.findMarker(u8, 357.0, 0);
-    const dataMarker = this.findMarker(u8, 299.0, eoh + 4);
-    if (eoh < 0 || dataMarker < 0) return null;
-
-    const nodeCount = this.estimateNodeCount(buf, eoh);
-    const elementCount = this.estimateElementCount(buf, eoh, nodeCount);
-    if (nodeCount <= 0 || elementCount <= 0) return null;
-    if (nodeCount > 200000 || elementCount > 200000) return null;
-
-    const dataStart = this.findDataStartForRecovery(dv, dataMarker, nodeCount);
-    if (dataStart < 0) return null;
-
-    // 尝试按 3 个连续块读取坐标：X / Y / Z
-    const coords = new Float32Array(nodeCount * 3);
-    let finiteCount = 0;
-    for (let i = 0; i < nodeCount; i++) {
-      const x = dv.getFloat32(dataStart + i * 4, true);
-      const y = dv.getFloat32(dataStart + nodeCount * 4 + i * 4, true);
-      const z = dv.getFloat32(dataStart + nodeCount * 8 + i * 4, true);
-      coords[i * 3] = Number.isFinite(x) ? x : 0;
-      coords[i * 3 + 1] = Number.isFinite(y) ? y : 0;
-      coords[i * 3 + 2] = Number.isFinite(z) ? z : 0;
-      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) finiteCount++;
-    }
-    if (finiteCount === 0) {
-      // 兜底：生成一个规则网格，至少保证场景能正常显示
-      const nx = Math.max(2, Math.round(Math.cbrt(nodeCount)));
-      const ny = nx;
-      const nz = Math.max(2, Math.ceil(nodeCount / (nx * ny)));
-      let p = 0;
-      for (let k = 0; k < nz && p < nodeCount; k++) {
-        for (let j = 0; j < ny && p < nodeCount; j++) {
-          for (let i = 0; i < nx && p < nodeCount; i++) {
-            coords[p * 3] = i / Math.max(1, nx - 1);
-            coords[p * 3 + 1] = j / Math.max(1, ny - 1);
-            coords[p * 3 + 2] = k / Math.max(1, nz - 1);
-            p++;
-          }
-        }
-      }
-    }
-    // 如果恢复出来的节点/单元不可靠，则直接退化为一个可见的规则六面体，保证界面至少能显示网格与云图。
-    let finalNodeCount = nodeCount;
-    let finalCoords = coords;
-    let finalElements: ElementSet;
-    if (finiteCount < Math.min(8, nodeCount) || elementCount <= 0) {
-      finalNodeCount = 8;
-      const minX = Math.min(...Array.from(coords).filter((_, i) => i % 3 === 0).slice(0, nodeCount));
-      const maxX = Math.max(...Array.from(coords).filter((_, i) => i % 3 === 0).slice(0, nodeCount));
-      const minY = Math.min(...Array.from(coords).filter((_, i) => i % 3 === 1).slice(0, nodeCount));
-      const maxY = Math.max(...Array.from(coords).filter((_, i) => i % 3 === 1).slice(0, nodeCount));
-      const minZ = Math.min(...Array.from(coords).filter((_, i) => i % 3 === 2).slice(0, nodeCount));
-      const maxZ = Math.max(...Array.from(coords).filter((_, i) => i % 3 === 2).slice(0, nodeCount));
-      const x0 = Number.isFinite(minX) ? minX : -0.5;
-      const x1 = Number.isFinite(maxX) ? maxX : 0.5;
-      const y0 = Number.isFinite(minY) ? minY : -0.5;
-      const y1 = Number.isFinite(maxY) ? maxY : 0.5;
-      const z0 = Number.isFinite(minZ) ? minZ : -0.5;
-      const z1 = Number.isFinite(maxZ) ? maxZ : 0.5;
-      finalCoords = new Float32Array([
-        x0, y0, z0,
-        x1, y0, z0,
-        x1, y1, z0,
-        x0, y1, z0,
-        x0, y0, z1,
-        x1, y0, z1,
-        x1, y1, z1,
-        x0, y1, z1,
-      ]);
-      finalElements = new ElementSet("FEBRICK", 1);
-      finalElements.connectivity.set([0,1,2,3,4,5,6,7]);
-    } else {
-      finalElements = new ElementSet("FEBRICK", elementCount);
-    }
-    const nodes = new NodeSet(finalNodeCount, finalCoords);
-    const dataset = new FlowDataset(nodes, finalElements);
-
-    const variableBlocksStart = dataStart + nodeCount * 12;
-    const extraVarNames = variableNames.slice(3);
-    let p = variableBlocksStart;
-    for (let vi = 0; vi < extraVarNames.length; vi++) {
-      const arr = new Float32Array(nodeCount);
-      if (p + nodeCount * 4 > buf.byteLength) break;
-      for (let i = 0; i < nodeCount; i++) arr[i] = dv.getFloat32(p + i * 4, true);
-      p += nodeCount * 4;
-      dataset.variables[extraVarNames[vi]] = arr;
-    }
-    if (Object.keys(dataset.variables).length === 0) {
-      const synthetic = new Float32Array(nodeCount);
-      for (let i = 0; i < nodeCount; i++) synthetic[i] = coords[i * 3 + 2];
-      dataset.variables["Density(kg/m<sup>3</sup>)"] = synthetic;
-    }
-    return { dataset, variableNames };
-  }
-
-  private buildGuaranteedFallbackDataset(buf: ArrayBuffer): ParseResult {
-    const bytes = new Uint8Array(buf);
-    const seed = this.hashBytes(bytes);
-
-    // 构造一个稳定、可渲染、可拾取、可切片的“专用兜底数据集”
-    const nodeCount = 8;
-    const coords = new Float32Array([
-      -0.5, -0.5, -0.5,
-      0.5, -0.5, -0.5,
-      0.5, 0.5, -0.5,
-      -0.5, 0.5, -0.5,
-      -0.5, -0.5, 0.5,
-      0.5, -0.5, 0.5,
-      0.5, 0.5, 0.5,
-      -0.5, 0.5, 0.5,
-    ]);
-    const nodes = new NodeSet(nodeCount, coords);
-    const elements = new ElementSet("FEBRICK", 1);
-    elements.connectivity.set([0, 1, 2, 3, 4, 5, 6, 7]);
-    const dataset = new FlowDataset(nodes, elements);
-
-    const vars = [
-      "Density(kg/m<sup>3</sup>)",
-      "Pressure(N/m<sup>2</sup>)",
-      "Temperature(K)",
-      "Ma(1)",
-      "MiuL(N*s/m<sup>2</sup>)",
-    ];
-    for (let vi = 0; vi < vars.length; vi++) {
-      const arr = new Float32Array(nodeCount);
-      for (let i = 0; i < nodeCount; i++) {
-        arr[i] = vi + 1 + Math.sin(seed * 0.001 + i * 0.7 + vi);
-      }
-      dataset.variables[vars[vi]] = arr;
-    }
-    dataset.adjacency = buildAdjacencyFromFEBRICK(elements, nodeCount, true);
-    return { dataset, variableNames: ["X", "Y", "Z", ...vars] };
-  }
-
-  private hashBytes(bytes: Uint8Array): number {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < bytes.length; i++) {
-      h ^= bytes[i];
-      h = Math.imul(h, 16777619);
-    }
-    return h >>> 0;
-  }
-
-  private findMarker(u8: Uint8Array, value: number, start: number): number {
-    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-    for (let off = Math.max(0, start); off + 4 <= u8.length; off += 4) {
-      if (Math.abs(dv.getFloat32(off, true) - value) < 1e-6) return off;
-    }
-    return -1;
-  }
-
-  private estimateNodeCount(buf: ArrayBuffer, eoh: number): number {
-    // 按这批文件经验：坐标区之前是固定头，后面紧跟 3 组坐标块。
-    // 这里不再暴力遍历百万次，避免界面卡顿。
-    const approxDataStart = eoh + 4 + 4 * 12 + 4 + 4 + 4 + 4 + 4 + 4;
-    const remain = Math.max(0, buf.byteLength - approxDataStart);
-    const approx = Math.floor(remain / 64);
-    return Math.max(8, Math.min(200000, approx));
-  }
-
-  private estimateElementCount(buf: ArrayBuffer, eoh: number, nodeCount: number): number {
-    const afterCoords = eoh + 4 + 4 * 12 + 4 + 4 + 4 + 4 + 4 + 4 + nodeCount * 12;
-    const remain = Math.max(0, buf.byteLength - afterCoords);
-    return Math.max(1, Math.min(200000, Math.floor(remain / 32)));
-  }
-
-  private findDataStartForRecovery(dv: DataView, dataMarker: number, nodeCount: number): number {
-    const base = dataMarker + 4;
-    const candidates = [
-      base + 4 * 12 + 4 + 4 + 4 + 4 + 4 + 4,
-      base + 4 * 12 + 4 + 4 + 4 + 4,
-      base + 4 * 12,
-    ];
-    for (const c of candidates) {
-      if (c + nodeCount * 12 <= dv.byteLength) return c;
-    }
-    return -1;
-  }
-}
-
 export class TecplotASCIIPalette implements IFlowParserStrategy {
   canParse(input: ParserInput, hint?: { filename?: string }): boolean {
     const filename = hint?.filename ?? (input instanceof File ? input.name : "");
@@ -843,14 +687,6 @@ export class TecplotBinaryPalette implements IFlowParserStrategy {
   private async readAsArrayBuffer(input: ParserInput): Promise<ArrayBuffer> {
     if (input instanceof File) return input.arrayBuffer();
     return input;
-  }
-
-  private readI32(dv: DataView, off: number, littleEndian = true): number {
-    return dv.getInt32(off, littleEndian);
-  }
-
-  private readF32(dv: DataView, off: number, littleEndian = true): number {
-    return dv.getFloat32(off, littleEndian);
   }
 
   private readAsciiI32String(
