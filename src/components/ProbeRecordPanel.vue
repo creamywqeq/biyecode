@@ -1,22 +1,27 @@
 <script setup lang="ts">
-import { inject } from "vue";
+import { computed, inject } from "vue";
 import { FLOW_APP_KEY } from "../app/flowAppContext";
 
 /**
  * 点选打点记录：侧边栏表格
  * - 订阅 bus.on("click")，将每次点击的探针数据追加到 state.probeRecords
- * - 用 el-table 展示，支持清空
+ * - 用 el-table 展示，含 XYZ 与 dat 文件中所有变量的插值结果
  */
 const app = inject(FLOW_APP_KEY);
 if (!app) throw new Error("ProbeRecordPanel: 缺少 FlowAppProvider");
+
+const variableNames = computed(() => Object.keys(app.state.variableStats.value));
 
 function clearRecords() {
   app.clearProbeLabels();
   app.state.probeRecords.value = [];
 }
 
-function formatNum(v: number) {
-  return v.toFixed(6);
+function formatNum(v: number | undefined) {
+  if (v == null || !Number.isFinite(v)) return "-";
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e5)) return v.toExponential(4);
+  return v.toPrecision(6);
 }
 </script>
 
@@ -28,24 +33,28 @@ function formatNum(v: number) {
     </div>
     <el-table
       :data="app.state.probeRecords.value"
-      max-height="240"
+      max-height="260"
       size="small"
       stripe
       class="record-table"
     >
       <el-table-column prop="id" label="#" width="40" />
-      <el-table-column prop="x" label="X" width="70">
+      <el-table-column prop="x" label="X" width="86">
         <template #default="{ row }">{{ formatNum(row.x) }}</template>
       </el-table-column>
-      <el-table-column prop="y" label="Y" width="70">
+      <el-table-column prop="y" label="Y" width="86">
         <template #default="{ row }">{{ formatNum(row.y) }}</template>
       </el-table-column>
-      <el-table-column prop="z" label="Z" width="70">
+      <el-table-column prop="z" label="Z" width="86">
         <template #default="{ row }">{{ formatNum(row.z) }}</template>
       </el-table-column>
-      <el-table-column prop="variable" label="变量" width="60" />
-      <el-table-column prop="value" label="值">
-        <template #default="{ row }">{{ formatNum(row.value) }}</template>
+      <el-table-column
+        v-for="name in variableNames"
+        :key="name"
+        :label="name"
+        min-width="110"
+      >
+        <template #default="{ row }">{{ formatNum(row.values?.[name]) }}</template>
       </el-table-column>
     </el-table>
     <div v-if="!app.state.probeRecords.value.length" class="empty-hint">
@@ -56,7 +65,7 @@ function formatNum(v: number) {
 
 <style scoped>
 .panel {
-  width: 280px;
+  width: 320px;
   margin: 12px;
   padding: 14px 16px;
   color: var(--text-primary);

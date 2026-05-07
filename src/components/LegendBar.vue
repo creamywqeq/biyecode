@@ -1,93 +1,176 @@
 <script setup lang="ts">
-import { computed, inject } from "vue";
+import { computed, inject, watch } from "vue";
 import { FLOW_APP_KEY } from "../app/flowAppContext";
+import { turboColor } from "../renderer/FlowRenderer";
 
 /**
- * LegendBar：图例 + 双滑块阈值
- * - 图例：蓝->红 渐变条（可替换为与 LUT 一致的 Turbo/Jet）
- * - slider：range [0,1]，拖拽实时更新 FlowRenderer shader uniforms（uMin/uMax）
+ * LegendBar：纯展示型色条（Tecplot 360 EX 风格）
+ * - 顶部：变量下拉，默认温度
+ * - 中部：11 段离散 Turbo 色带 + 12 个边界数值刻度
+ * - 不再嵌入阈值把手；阈值过滤逻辑请见独立的 ThresholdPanel
  */
-
 const app = inject(FLOW_APP_KEY);
 if (!app) throw new Error("LegendBar: 缺少 FlowAppProvider");
 
-const range = computed({
-  get: () => app.state.scalarThreshold01.value,
-  set: (v: [number, number]) => {
-    app.state.scalarThreshold01.value = v;
-  },
+const SEGMENTS = 11;
+
+const variableOptions = computed(() => {
+  const stats = app.state.variableStats.value;
+  return Object.keys(stats).map((name) => ({ label: name, value: name }));
 });
+
+// 色条上下端点 = 当前颜色映射区间（state.scalarThreshold），
+// 与 Tecplot 一致：用户在阈值面板调整 max/min，色条数值刻度同步变化。
+const minValue = computed(() => app.state.scalarThreshold.value[0] ?? 0);
+const maxValue = computed(() => app.state.scalarThreshold.value[1] ?? 1);
+
+const stripes = computed(() => {
+  const list: { rgb: string }[] = [];
+  for (let i = 0; i < SEGMENTS; i++) {
+    const t = (SEGMENTS - 1 - i) / (SEGMENTS - 1);
+    const [r, g, b] = turboColor(t);
+    list.push({
+      rgb: `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`,
+    });
+  }
+  return list;
+});
+
+/** 12 个边界数值（自顶向下 = 自大向小） */
+const boundaryValues = computed(() => {
+  const lo = minValue.value;
+  const hi = maxValue.value;
+  const arr: number[] = [];
+  for (let i = 0; i <= SEGMENTS; i++) {
+    const t = (SEGMENTS - i) / SEGMENTS;
+    arr.push(lo + t * (hi - lo));
+  }
+  return arr;
+});
+
+function fmt(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e5)) return v.toExponential(3);
+  return Number(v.toPrecision(4)).toString();
+}
+
+// 切换主变量时：同步渲染器 uDataMin/uDataMax 与阈值范围
+watch(
+  () => app.state.activeScalar.value,
+  (name) => {
+    if (!name) return;
+    const stat = app.state.variableStats.value[name];
+    if (!stat) return;
+    app.state.scalarThreshold.value = [stat.min, stat.max];
+    const ds = app.state.dataset.value;
+    if (ds && ds.variables[name]) {
+      app.renderer.setScalarField(ds, name, { dataMin: stat.min, dataMax: stat.max });
+    }
+  },
+);
 </script>
 
 <template>
   <div class="legend glass-panel">
-    <div class="row">
-      <div class="gradient" />
-      <div class="minmax">
-        <span>0</span>
-        <span>1</span>
-      </div>
+    <!-- 顶部：变量选择（默认温度） -->
+    <div class="legend-header">
+      <span class="legend-title">{{ app.state.activeScalar.value || "变量" }}</span>
+      <el-select
+        v-model="app.state.activeScalar.value"
+        size="small"
+        class="legend-select"
+        :disabled="variableOptions.length === 0"
+      >
+        <el-option
+          v-for="opt in variableOptions"
+          :key="opt.value"
+          :label="opt.label"
+          :value="opt.value"
+        />
+      </el-select>
     </div>
 
-    <el-slider
-      v-model="range"
-      range
-      :min="0"
-      :max="1"
-      :step="0.001"
-      :show-tooltip="true"
-    />
+    <!-- 中部：色带 + 边界数值刻度 -->
+    <div class="legend-body">
+      <div class="bands">
+        <div
+          v-for="(seg, i) in stripes"
+          :key="i"
+          class="band"
+          :style="{ background: seg.rgb }"
+        />
+      </div>
+      <div class="value-axis">
+        <span
+          v-for="(v, i) in boundaryValues"
+          :key="i"
+          class="value-tick"
+        >{{ fmt(v) }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .legend {
-  width: 420px;
-  padding: 14px 18px;
+  width: 180px;
+  padding: 12px 12px;
   color: var(--text-primary);
-}
-
-.row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 10px;
 }
 
-.gradient {
-  height: 16px;
-  border-radius: 10px;
-  border: 1px solid var(--glass-border);
-  background: linear-gradient(90deg, #3b82f6 0%, #22c55e 40%, #eab308 65%, #ef4444 100%);
-  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.1);
-}
-
-.minmax {
+.legend-header {
   display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-secondary);
+  flex-direction: column;
+  gap: 6px;
+}
+.legend-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.legend-select {
+  width: 100%;
 }
 
-.legend :deep(.el-slider__runway) {
-  background: var(--glass-bg);
-  border-radius: 6px;
+.legend-body {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: 360px;
 }
-.legend :deep(.el-slider__bar) {
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.6), rgba(239, 68, 68, 0.6));
-  border-radius: 6px;
+
+.bands {
+  width: 32px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  overflow: hidden;
 }
-.legend :deep(.el-slider__button) {
-  border: 2px solid var(--accent);
-  background: var(--glass-bg-header);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+.band {
+  flex: 1;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
 }
-.legend :deep(.el-slider__button:hover) {
-  transform: scale(1.15);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
+.band:last-child {
+  border-bottom: none;
+}
+
+.value-axis {
+  flex: 1;
+  position: relative;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.value-tick {
+  line-height: 1;
+  white-space: nowrap;
 }
 </style>
-

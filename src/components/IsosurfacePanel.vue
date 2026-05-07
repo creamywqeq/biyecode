@@ -1,21 +1,57 @@
 <script setup lang="ts">
-import { inject } from "vue";
+import { computed, inject, watch } from "vue";
 import { FLOW_APP_KEY } from "../app/flowAppContext";
 
 /**
  * 等值面控制面板
- * - 输入阈值（0~1），实时提取并显示等值面
+ * - 从当前数据集读取可选变量（默认 Temperature）
+ * - 阈值范围使用该变量的原始 min/max
  */
 const app = inject(FLOW_APP_KEY);
 if (!app) throw new Error("IsosurfacePanel: 缺少 FlowAppProvider");
 
+const variableOptions = computed(() => {
+  const stats = app.state.variableStats.value;
+  return Object.keys(stats).map((name) => ({ label: name, value: name }));
+});
+
+const currentStat = computed(() => {
+  const name = app.state.isoVariable.value;
+  return name ? app.state.variableStats.value[name] : undefined;
+});
+
+const minValue = computed(() => currentStat.value?.min ?? 0);
+const maxValue = computed(() => currentStat.value?.max ?? 1);
+const step = computed(() => {
+  const stat = currentStat.value;
+  if (!stat) return 0.01;
+  const span = stat.max - stat.min;
+  return span > 0 ? span / 200 : 0.01;
+});
+
+// 变量切换时自动重置阈值为中间值
+watch(
+  () => app.state.isoVariable.value,
+  (name) => {
+    const stat = app.state.variableStats.value[name];
+    if (stat) {
+      const mid = (stat.min + stat.max) * 0.5;
+      app.state.isosurfaceValue.value = mid;
+    }
+  },
+);
+
 function onApply() {
   const ds = app.state.dataset.value;
-  const scalar = app.state.activeScalar.value;
+  const variable = app.state.isoVariable.value;
   const val = app.state.isosurfaceValue.value;
-  if (!ds || !scalar) return;
+  if (!ds || !variable) return;
+  const stat = app.state.variableStats.value[variable];
   console.time("extractIsosurface");
-  app.renderer.setIsosurface(ds, scalar, val);
+  app.renderer.setIsosurface(ds, variable, val, {
+    dataMin: stat?.min,
+    dataMax: stat?.max,
+  });
   console.timeEnd("extractIsosurface");
 }
 </script>
@@ -24,17 +60,36 @@ function onApply() {
   <div class="panel glass-panel">
     <div class="title">等值面 (Marching Cubes)</div>
     <div class="row">
-      <span class="label">阈值 (0~1)</span>
+      <span class="label">变量</span>
+      <el-select
+        v-model="app.state.isoVariable.value"
+        size="small"
+        class="iso-select"
+        :disabled="variableOptions.length === 0"
+      >
+        <el-option
+          v-for="opt in variableOptions"
+          :key="opt.value"
+          :label="opt.label"
+          :value="opt.value"
+        />
+      </el-select>
+    </div>
+    <div class="row">
+      <span class="label">阈值</span>
       <el-input-number
         v-model="app.state.isosurfaceValue.value"
-        :min="0"
-        :max="1"
-        :step="0.05"
-        :precision="3"
+        :min="minValue"
+        :max="maxValue"
+        :step="step"
+        :precision="4"
         size="default"
         controls-position="right"
         class="iso-input"
       />
+    </div>
+    <div class="range-hint">
+      范围 [{{ minValue.toPrecision(4) }}, {{ maxValue.toPrecision(4) }}]
     </div>
     <el-button type="primary" size="small" @click="onApply">提取等值面</el-button>
   </div>
@@ -63,6 +118,15 @@ function onApply() {
   font-size: 13px;
   min-width: 70px;
   color: var(--text-secondary);
+}
+.iso-select {
+  flex: 1;
+}
+.range-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+  margin-left: 80px;
 }
 .iso-input :deep(.el-input__wrapper) {
   background: var(--glass-bg) !important;

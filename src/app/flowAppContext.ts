@@ -14,27 +14,40 @@ export type ProbeRecord = {
   x: number;
   y: number;
   z: number;
+  /** 当前主变量名 */
   variable: string;
+  /** 当前主变量值 */
   value: number;
+  /** 全部变量在该位置的插值结果 */
+  values: Record<string, number>;
   cellId: number;
 };
+
+/** 变量原始数值的 min/max */
+export type VariableStats = Record<string, { min: number; max: number }>;
 
 export type FlowAppState = {
   /** 当前数据集 */
   dataset: Ref<FlowDataset | null>;
   /** 当前用于云图/探针的标量名 */
   activeScalar: Ref<string>;
+  /** 各物理量原始 min/max */
+  variableStats: Ref<VariableStats>;
+  /** 等值面提取所用变量（默认 Temperature） */
+  isoVariable: Ref<string>;
   /** 图层显隐 */
   layerVisible: Ref<Record<LayerId, boolean>>;
   /** 探针点击查询记录列表（侧边栏表格数据） */
   probeRecords: Ref<ProbeRecord[]>;
-  /** 云图阈值（0~1） */
-  scalarThreshold01: Ref<[number, number]>;
+  /** 云图阈值（原始物理量数值范围） */
+  scalarThreshold: Ref<[number, number]>;
   /** 切片平面参数（世界坐标） */
   slicePlane: Ref<{ origin: [number, number, number]; normal: [number, number, number] }>;
+  /** 切片轴向（X/Y/Z），用于一键切到坐标轴方向 */
+  sliceAxis: Ref<"X" | "Y" | "Z" | "custom">;
   /** 切片 Gizmo 模式：translate=平移 / rotate=旋转法线 */
   sliceGizmoMode: Ref<"translate" | "rotate">;
-  /** 等值面阈值（用户输入） */
+  /** 等值面阈值（原始物理量数值） */
   isosurfaceValue: Ref<number>;
 };
 
@@ -54,15 +67,18 @@ export function createDefaultFlowAppState(): FlowAppState {
   return {
     dataset: shallowRef(null),
     activeScalar: shallowRef(""),
+    variableStats: shallowRef<VariableStats>({}),
+    isoVariable: shallowRef(""),
     layerVisible: shallowRef({ wireframe: true, scalar: true, slice: true, isosurface: true }),
     probeRecords: shallowRef<ProbeRecord[]>([]),
-    scalarThreshold01: shallowRef<[number, number]>([0, 1]),
+    scalarThreshold: shallowRef<[number, number]>([0, 1]),
     slicePlane: shallowRef({
       origin: [0, 0, 0],
       normal: [0, 0, 1],
     }),
+    sliceAxis: shallowRef<"X" | "Y" | "Z" | "custom">("Z"),
     sliceGizmoMode: shallowRef<"translate" | "rotate">("translate"),
-    isosurfaceValue: shallowRef(0.5),
+    isosurfaceValue: shallowRef(0)
   };
 }
 

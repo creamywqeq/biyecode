@@ -15,17 +15,35 @@ const text = ref("");
 
 const offset = 14;
 
+function fmt(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e5)) return v.toExponential(4);
+  return v.toPrecision(6);
+}
+
 function onHover(payload: {
   world: { x: number; y: number; z: number };
   value: number;
   variable: string;
+  values?: Record<string, number>;
   clientX: number;
   clientY: number;
 }) {
   visible.value = true;
   x.value = payload.clientX + offset;
   y.value = payload.clientY + offset;
-  text.value = `${payload.variable}: ${payload.value.toExponential(4)}\n(${payload.world.x.toFixed(3)}, ${payload.world.y.toFixed(3)}, ${payload.world.z.toFixed(3)})`;
+  const lines: string[] = [];
+  lines.push(`(X, Y, Z) = (${payload.world.x.toFixed(4)}, ${payload.world.y.toFixed(4)}, ${payload.world.z.toFixed(4)})`);
+  if (payload.values && Object.keys(payload.values).length > 0) {
+    for (const [name, v] of Object.entries(payload.values)) {
+      const star = name === payload.variable ? "▶ " : "  ";
+      lines.push(`${star}${name}: ${fmt(v)}`);
+    }
+  } else {
+    lines.push(`${payload.variable}: ${fmt(payload.value)}`);
+  }
+  text.value = lines.join("\n");
 }
 
 function onMiss() {

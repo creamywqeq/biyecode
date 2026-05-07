@@ -12,6 +12,13 @@ import type { FlowDataset } from "../flow";
  */
 export class VtkSlicer {
   private sliceMesh?: THREE.Mesh;
+  /**
+   * 切片指示底板：始终随当前切片平面位置/法向同步显示的一块半透明矩形。
+   * 即使该平面没有切到任何单元（例如位于数据外部、或 Position 滑块拉到边界外），
+   * 用户也能从这块底板直观看到 "切片现在在哪里、朝向如何"。
+   * 渲染顺序低于实际切片几何，且 depthWrite=false，避免遮挡数据切片着色。
+   */
+  private guideMesh?: THREE.Mesh;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -30,6 +37,9 @@ export class VtkSlicer {
       colorByScalar?: string;
       lutTexture?: THREE.DataTexture;
       opacity?: number;
+      /** 该变量原始 min/max（与 FlowRenderer.uDataMin/Max 保持一致） */
+      dataMin?: number;
+      dataMax?: number;
     },
   ): THREE.Mesh {
     this.clear();
@@ -43,10 +53,27 @@ export class VtkSlicer {
     let material: THREE.Material;
     if (scalarName && options?.lutTexture && result.scalars) {
       geom.setAttribute("aScalar", new THREE.BufferAttribute(result.scalars, 1));
+      // 若未传入 min/max，则现场计算切片点上的范围
+      let dataMin = options?.dataMin ?? Number.POSITIVE_INFINITY;
+      let dataMax = options?.dataMax ?? Number.NEGATIVE_INFINITY;
+      if (options?.dataMin == null || options?.dataMax == null) {
+        for (let i = 0; i < result.scalars.length; i++) {
+          const v = result.scalars[i];
+          if (!Number.isFinite(v)) continue;
+          if (v < dataMin) dataMin = v;
+          if (v > dataMax) dataMax = v;
+        }
+      }
+      if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax) || dataMax <= dataMin) {
+        dataMin = 0;
+        dataMax = 1;
+      }
       material = new THREE.ShaderMaterial({
         uniforms: {
           uLUT: { value: options.lutTexture },
           uOpacity: { value: opacity },
+          uDataMin: { value: dataMin },
+          uDataMax: { value: dataMax },
         },
         vertexShader: SLICE_SCALAR_VERTEX_GLSL,
         fragmentShader: SLICE_SCALAR_FRAGMENT_GLSL,
@@ -67,18 +94,105 @@ export class VtkSlicer {
     }
 
     this.sliceMesh = new THREE.Mesh(geom, material);
+    // 实际切片几何渲染在底板之上
+    this.sliceMesh.renderOrder = 2;
     this.scene.add(this.sliceMesh);
+
+    // 同步更新切片指示底板
+    this.updateGuide(dataset, plane);
+
     return this.sliceMesh;
   }
 
   clear(): void {
-    if (!this.sliceMesh) return;
-    this.scene.remove(this.sliceMesh);
-    this.sliceMesh.geometry.dispose();
-    if (this.sliceMesh.material instanceof THREE.ShaderMaterial) {
-      this.sliceMesh.material.dispose();
+    if (this.sliceMesh) {
+      this.scene.remove(this.sliceMesh);
+      this.sliceMesh.geometry.dispose();
+      if (this.sliceMesh.material instanceof THREE.ShaderMaterial) {
+        this.sliceMesh.material.dispose();
+      }
+      this.sliceMesh = undefined;
     }
-    this.sliceMesh = undefined;
+    // 同步清掉指示底板：避免数据集卸载/网格超上限时底板仍残留
+    this.clearGuide();
+  }
+
+  /** 仅清除切片指示底板（数据集卸载时使用） */
+  clearGuide(): void {
+    if (!this.guideMesh) return;
+    this.scene.remove(this.guideMesh);
+    this.guideMesh.geometry.dispose();
+    (this.guideMesh.material as THREE.Material).dispose();
+    this.guideMesh = undefined;
+  }
+
+  /**
+   * 创建/更新切片指示底板：
+   * - 边长 = 数据集 bbox 最大维度 × 1.05，保证完全覆盖被切区域
+   * - 位置 = plane.origin
+   * - 朝向 = 平面默认法线 +Z 旋转到 plane.normal
+   * - 半透明蓝灰底色，不写深度，让数据切片清晰显示在上方
+   */
+  updateGuide(
+    dataset: FlowDataset,
+    plane: { origin: [number, number, number]; normal: [number, number, number] },
+  ): void {
+    const coords = dataset.nodes.coords;
+    if (coords.length < 3) {
+      this.clearGuide();
+      return;
+    }
+    let xmn = Infinity, ymn = Infinity, zmn = Infinity;
+    let xmx = -Infinity, ymx = -Infinity, zmx = -Infinity;
+    for (let i = 0; i < coords.length; i += 3) {
+      const x = coords[i], y = coords[i + 1], z = coords[i + 2];
+      if (x < xmn) xmn = x; if (x > xmx) xmx = x;
+      if (y < ymn) ymn = y; if (y > ymx) ymx = y;
+      if (z < zmn) zmn = z; if (z > zmx) zmx = z;
+    }
+    const sx = xmx - xmn, sy = ymx - ymn, sz = zmx - zmn;
+    const size = Math.max(sx, sy, sz, 1e-6) * 1.05;
+
+    if (!this.guideMesh) {
+      const geom = new THREE.PlaneGeometry(1, 1);
+      const mat = new THREE.MeshBasicMaterial({
+        // 浅蓝灰色，与 Tecplot 默认 slice 指示色相近
+        color: 0x6da3d6,
+        transparent: true,
+        opacity: 0.18,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      this.guideMesh = new THREE.Mesh(geom, mat);
+      this.guideMesh.renderOrder = 1;
+      this.scene.add(this.guideMesh);
+    }
+
+    // 缩放（PlaneGeometry 单位边长，scale 即可控制实际尺寸）
+    this.guideMesh.scale.set(size, size, 1);
+
+    // 位置
+    this.guideMesh.position.set(plane.origin[0], plane.origin[1], plane.origin[2]);
+
+    // 朝向：把 PlaneGeometry 默认法线 +Z 对齐到 plane.normal
+    const n = new THREE.Vector3(plane.normal[0], plane.normal[1], plane.normal[2]);
+    if (n.lengthSq() < 1e-12) n.set(0, 0, 1);
+    n.normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    this.guideMesh.quaternion.copy(q);
+  }
+
+  /**
+   * 实时更新切片着色的颜色映射区间（uDataMin/uDataMax）。
+   * 与 FlowRenderer.setScalarRange 等价，用于响应阈值面板/色条的全局调整。
+   */
+  setScalarRange(minRaw: number, maxRaw: number): void {
+    if (!this.sliceMesh) return;
+    const mat = this.sliceMesh.material;
+    if (mat instanceof THREE.ShaderMaterial && mat.uniforms.uDataMin && mat.uniforms.uDataMax) {
+      mat.uniforms.uDataMin.value = minRaw;
+      mat.uniforms.uDataMax.value = maxRaw;
+    }
   }
 }
 
@@ -275,10 +389,13 @@ export const SLICE_SCALAR_FRAGMENT_GLSL = /* glsl */ `
   precision highp float;
   uniform sampler2D uLUT;
   uniform float uOpacity;
+  uniform float uDataMin;
+  uniform float uDataMax;
   varying float vScalar;
   float saturate(float x) { return clamp(x, 0.0, 1.0); }
   void main() {
-    float t = saturate(vScalar);
+    float denom = max(uDataMax - uDataMin, 1e-12);
+    float t = saturate((vScalar - uDataMin) / denom);
     vec3 rgb = texture2D(uLUT, vec2(t, 0.5)).rgb;
     gl_FragColor = vec4(rgb, uOpacity);
   }

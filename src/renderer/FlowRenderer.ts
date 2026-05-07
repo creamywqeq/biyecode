@@ -235,6 +235,10 @@ export class FlowRenderer {
       opacity?: number;
       /** 是否显示背面（默认 true，便于观察内部） */
       doubleSide?: boolean;
+      /** 该变量的原始 min/max（用于 GPU 内归一化） */
+      dataMin?: number;
+      /** 该变量的原始 min/max（用于 GPU 内归一化） */
+      dataMax?: number;
     },
   ): void {
     this.clearScalarMesh();
@@ -248,21 +252,40 @@ export class FlowRenderer {
     const lutSize = options?.lutSize ?? 256;
     this.lutTexture = createTurboLUTTexture(lutSize);
 
-    // 2) 构建几何（位置 + index + 标量 attribute）
-    const useSurfaceOnly = dataset.elements.elementCount > 1000;
-    const geometry = useSurfaceOnly
-      ? buildExternalSurfaceGeometry(dataset)
-      : buildFEBRICKSurfaceTrianglesGeometry(dataset);
+    // 2) 构建几何：始终只取外表面，避免内部单元面叠加导致阈值过滤后看上去碎。
+    // 同时计算平滑顶点法线，在过滤边界使用 fwidth 做亚像素平滑，
+    // 达到“丢弃范围外云图，范围内云图丝滑连贯”的观感。
+    const geometry = buildExternalSurfaceGeometry(dataset);
+    geometry.computeVertexNormals();
     geometry.setAttribute("aScalar", new THREE.BufferAttribute(scalar, 1));
+
+    // 计算原始数值 min/max（用于 GPU 内归一化，避免 CPU 合并原始量）
+    let dataMin = options?.dataMin ?? 0;
+    let dataMax = options?.dataMax ?? 1;
+    if (options?.dataMin == null || options?.dataMax == null) {
+      let mn = Number.POSITIVE_INFINITY;
+      let mx = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < scalar.length; i++) {
+        const v = scalar[i];
+        if (!Number.isFinite(v)) continue;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+      if (Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) {
+        dataMin = mn;
+        dataMax = mx;
+      }
+    }
 
     // 3) ShaderMaterial：片元阶段按 LUT 采样上色（平滑过渡）
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uLUT: { value: this.lutTexture },
         uOpacity: { value: options?.opacity ?? 1.0 },
-        // 阈值过滤：在片元阶段按标量范围丢弃（默认不过滤）
-        uMin: { value: 0.0 },
-        uMax: { value: 1.0 },
+        // 颜色映射区间（Tecplot "Contour values at endpoints"）：
+        // 数值 ∈ [uDataMin, uDataMax] -> LUT 的 t ∈ [0, 1]；区间外复位到端点颜色。
+        uDataMin: { value: dataMin },
+        uDataMax: { value: dataMax },
       },
       vertexShader: FLOW_SCALAR_VERTEX_GLSL,
       fragmentShader: FLOW_SCALAR_FRAGMENT_GLSL,
@@ -303,15 +326,16 @@ export class FlowRenderer {
   }
 
   /**
-   * 设置云图阈值过滤区间（LegendBar 双滑块）
-   * 约定：aScalar 已归一化到 0~1（若不是，请先用 DataNormalizer 归一化再传入）
+   * 动态更新颜色映射区间 [uDataMin, uDataMax]。
+   * 语义与 Tecplot “Contour values at endpoints” 一致：
+   * 数值被线性映射到 LUT 的 [0, 1]，小于 min / 大于 max 的部分被夹到端点颜色（不丢弃）。
    */
-  setScalarThreshold(min01: number, max01: number): void {
+  setScalarRange(minRaw: number, maxRaw: number): void {
     if (!this.scalarMaterial) return;
-    const minV = Math.min(min01, max01);
-    const maxV = Math.max(min01, max01);
-    this.scalarMaterial.uniforms.uMin.value = minV;
-    this.scalarMaterial.uniforms.uMax.value = maxV;
+    const a = Math.min(minRaw, maxRaw);
+    const b = Math.max(minRaw, maxRaw);
+    this.scalarMaterial.uniforms.uDataMin.value = a;
+    this.scalarMaterial.uniforms.uDataMax.value = b;
   }
 
   /** 图层显隐：供 SceneTree 控制 */
@@ -322,13 +346,46 @@ export class FlowRenderer {
     else this.isosurfaceLayer.visible = visible;
   }
 
-  /** 设置等值面（Marching Cubes） */
-  setIsosurface(dataset: FlowDataset, scalarName: string, isoValue: number): void {
+  /**
+   * 设置等值面（Marching Cubes）
+   * - 颜色由 Turbo LUT 在 (isoValue - dataMin)/(dataMax - dataMin) 处采样得到
+   *   保证与右侧色条颜色一一对应
+   */
+  setIsosurface(
+    dataset: FlowDataset,
+    scalarName: string,
+    isoValue: number,
+    options?: { dataMin?: number; dataMax?: number },
+  ): void {
     this.clearIsosurface();
     const geom = extractIsosurface(dataset, scalarName, isoValue);
     if (geom.getAttribute("position")!.count === 0) return;
+
+    // 颜色采样位置：当前 isoValue 在 [dataMin, dataMax] 中的归一化坐标
+    let dataMin = options?.dataMin;
+    let dataMax = options?.dataMax;
+    if (dataMin == null || dataMax == null) {
+      const arr = dataset.variables[scalarName];
+      let mn = Number.POSITIVE_INFINITY;
+      let mx = Number.NEGATIVE_INFINITY;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (!Number.isFinite(v)) continue;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+      dataMin = mn;
+      dataMax = mx;
+    }
+    const denom = Math.max(1e-12, (dataMax as number) - (dataMin as number));
+    const t = clamp01(((isoValue - (dataMin as number)) / denom));
+    const [r, g, b] = turboColor(t);
+    const color = new THREE.Color(r, g, b);
+
     const mat = new THREE.MeshPhongMaterial({
-      color: 0x00d4ff,
+      color,
+      shininess: 60,
+      specular: 0x222222,
       transparent: true,
       opacity: 0.85,
       side: THREE.DoubleSide,
@@ -436,17 +493,18 @@ export const FLOW_SCALAR_FRAGMENT_GLSL = /* glsl */ `
 
   uniform sampler2D uLUT;
   uniform float uOpacity;
-  uniform float uMin;
-  uniform float uMax;
+  // 颜色映射区间（Tecplot "Contour values at endpoints"）：
+  // 数据被线性映射到 [uDataMin, uDataMax] -> LUT 的 t∈[0,1]
+  // 数据小于 uDataMin 的全部夹到 LUT 起点颜色（蓝），大于 uDataMax 夹到终点颜色（红）
+  uniform float uDataMin;
+  uniform float uDataMax;
   varying float vScalar;
 
-  // clamp 标量到 [0,1]，避免异常值导致采样越界
   float saturate(float x) { return clamp(x, 0.0, 1.0); }
 
   void main() {
-    float t = saturate(vScalar);
-    // 阈值过滤：不在 [uMin,uMax] 的片元直接丢弃
-    if (t < uMin || t > uMax) discard;
+    float denom = max(uDataMax - uDataMin, 1e-12);
+    float t = saturate((vScalar - uDataMin) / denom);
     vec3 rgb = texture2D(uLUT, vec2(t, 0.5)).rgb;
     gl_FragColor = vec4(rgb, uOpacity);
   }
@@ -641,7 +699,7 @@ export function createTurboLUTTexture(lutSize: number): THREE.DataTexture {
  *
  * 参考：Google/viscm 等公开实现（多项式系数近似）。
  */
-function turboColor(t: number): [number, number, number] {
+export function turboColor(t: number): [number, number, number] {
   const x = clamp01(t);
 
   // 多项式系数（经验值，足够用于工程可视化；后续可替换为你指定的 LUT）

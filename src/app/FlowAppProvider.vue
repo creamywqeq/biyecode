@@ -4,11 +4,18 @@ import { FLOW_APP_KEY, createDefaultFlowAppState } from "./flowAppContext";
 import { EventBus } from "../core/EventBus";
 import { FlowRenderer, createTurboLUTTexture } from "../renderer/FlowRenderer";
 import { VtkSlicer } from "../algorithms/VtkSlicer";
-import { ProbeInteractor, buildHexTriToCell } from "../interaction/ProbeInteractor";
+import { ProbeInteractor } from "../interaction/ProbeInteractor";
 import type { ProbeEvents } from "../interaction/ProbeInteractor";
 import { extractExternalSurface } from "../algorithms/SurfaceExtractor";
 
+/** 切片跳过阈值：超过此单元数量不进行交互式切片，避免主线程長时间厄住 */
 const LARGE_MESH_THRESHOLD = 1000;
+/**
+ * 切片硬上限（防御性）：仅对极端规模的网格直接放弃。
+ * Tecplot 行为：无人为上限，几千万 cell 也会同步切（数秒级一次性计算）。
+ * 这里给一个非常宽松的上限，仅防止在 OOM 前夜的纯失控情况。
+ */
+const SLICE_MAX_CELLS = 200_000_000;
 
 /**
  * FlowAppProvider：把 3D 引擎与算法服务注入到 Vue 组件树
@@ -58,9 +65,15 @@ onMounted(() => {
     { deep: true, immediate: true },
   );
 
+  // 颜色映射区间（Tecplot "Contour values at endpoints" 语义）：
+  // [min, max] 被线性映射到 LUT 的 [0, 1]，两端外部的数值夹到端点颜色（不丢弃）。
+  // 同步到 FlowRenderer与 Slicer 的 uDataMin/uDataMax。
   watch(
-    () => state.scalarThreshold01.value,
-    ([min, max]) => renderer.setScalarThreshold(min, max),
+    () => state.scalarThreshold.value,
+    ([min, max]) => {
+      renderer.setScalarRange(min, max);
+      slicer.setScalarRange?.(min, max);
+    },
     { immediate: true },
   );
 
@@ -75,30 +88,36 @@ onMounted(() => {
     },
   );
 
-  // 当切片平面变化时，触发 vtk cutter 重新计算
-  // 对大网格跳过切片（遍历全部单元太慢）
+  // 当切片平面变化时，触发 vtk cutter 重新计算（同步执行，与 Tecplot 一致）
   watch(
     () => [state.dataset.value, state.slicePlane.value, state.activeScalar.value] as const,
     ([ds, plane, scalarName]) => {
       if (!ds) return;
-      if (ds.elements.elementCount > LARGE_MESH_THRESHOLD) { slicer.clear(); return; }
+      if (ds.elements.elementCount > SLICE_MAX_CELLS) {
+        console.warn(`[Slice] 单元数 ${ds.elements.elementCount} 超过硬上限 ${SLICE_MAX_CELLS}，已跳过`);
+        slicer.clear();
+        return;
+      }
       if (!plane || !Number.isFinite(plane.origin[0]) || !Number.isFinite(plane.origin[1]) || !Number.isFinite(plane.origin[2])) return;
-      if (scalarName) {
-        try {
+      const t0 = performance.now();
+      try {
+        if (scalarName) {
+          const [crMin, crMax] = state.scalarThreshold.value;
           slicer.slice(ds, plane, {
             colorByScalar: scalarName,
             lutTexture: sharedLUT,
             opacity: 0.9,
+            dataMin: crMin,
+            dataMax: crMax,
           });
-        } catch {
-          slicer.clear();
-        }
-      } else {
-        try {
+        } else {
           slicer.slice(ds, plane);
-        } catch {
-          slicer.clear();
         }
+        const ms = (performance.now() - t0).toFixed(0);
+        console.log(`[Slice] cells=${ds.elements.elementCount} took ${ms} ms`);
+      } catch (err) {
+        console.error("[Slice] 失败：", err);
+        slicer.clear();
       }
     },
     { deep: true },
@@ -114,6 +133,7 @@ onMounted(() => {
         z: ev.world.z,
         variable: ev.variable,
         value: ev.value,
+        values: ev.values ?? { [ev.variable]: ev.value },
         cellId: ev.cellId,
       },
     ];
@@ -129,14 +149,10 @@ onMounted(() => {
       const mesh = renderer.getScalarMesh();
       if (!mesh) return;
 
-      // For large meshes using surface extraction, build triToCell from boundary faces
-      let triToCell: Uint32Array;
-      if (ds.elements.elementCount > LARGE_MESH_THRESHOLD) {
-        const surface = extractExternalSurface(ds);
-        triToCell = surface.triToCell;
-      } else {
-        triToCell = buildHexTriToCell(ds.elements.elementCount);
-      }
+      // 云图 mesh 当前固定为外表面（FlowRenderer.setScalarField 总走 buildExternalSurfaceGeometry），
+      // 因此 triToCell 也必须取自外表面提取结果，否则 raycast 命中的三角索引拿不到正确 cell。
+      const surface = extractExternalSurface(ds);
+      const triToCell: Uint32Array = surface.triToCell;
 
       const probe = new ProbeInteractor(
         renderer.renderer.domElement,

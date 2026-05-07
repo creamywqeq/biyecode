@@ -19,6 +19,8 @@ export type ProbeEvents = {
     cellId: number;
     value: number;
     variable: string;
+    /** 全部变量在该点的插值结果 */
+    values: Record<string, number>;
     clientX: number;
     clientY: number;
   };
@@ -27,6 +29,8 @@ export type ProbeEvents = {
     cellId: number;
     value: number;
     variable: string;
+    /** 全部变量在该点的插值结果 */
+    values: Record<string, number>;
     labelObject: CSS2DObject;
   };
   miss: {
@@ -162,13 +166,15 @@ export class ProbeInteractor {
     }
 
     const { point, cellId } = hit;
-    const value = this.interpolateAtWorld(point, cellId, this.variableName);
+    const values = this.interpolateAllAtWorld(point, cellId);
+    const value = values[this.variableName] ?? this.interpolateAtWorld(point, cellId, this.variableName);
     this.updateHighlight(cellId);
     this.eventBus.emit("hover", {
       world: { x: point.x, y: point.y, z: point.z },
       cellId,
       value,
       variable: this.variableName,
+      values,
       clientX: e.clientX,
       clientY: e.clientY,
     });
@@ -183,8 +189,9 @@ export class ProbeInteractor {
     }
 
     const { point, cellId } = hit;
-    const value = this.interpolateAtWorld(point, cellId, this.variableName);
-    const label = this.createLabel(point, `${this.variableName}: ${value.toFixed(6)}`);
+    const values = this.interpolateAllAtWorld(point, cellId);
+    const value = values[this.variableName] ?? this.interpolateAtWorld(point, cellId, this.variableName);
+    const label = this.createLabel(point, `${this.variableName}: ${formatProbeValue(value)}`);
     this.labels.add(label);
 
     this.eventBus.emit("click", {
@@ -192,8 +199,25 @@ export class ProbeInteractor {
       cellId,
       value,
       variable: this.variableName,
+      values,
       labelObject: label,
     });
+  }
+
+  /** 对全部节点变量在世界坐标点进行三线性插值 */
+  private interpolateAllAtWorld(world: THREE.Vector3, cellId: number): Record<string, number> {
+    const result: Record<string, number> = {};
+    const vars = this.dataset.variables;
+    for (const name of Object.keys(vars)) {
+      const arr = vars[name];
+      if (!arr || arr.length !== this.dataset.nodes.nodeCount) continue;
+      try {
+        result[name] = interpolateHexTrilinear(world, cellId, this.dataset, arr);
+      } catch {
+        // 单个变量插值失败则跳过
+      }
+    }
+    return result;
   }
 
   private clearHoverState(): void {
@@ -278,6 +302,14 @@ export class ProbeInteractor {
     obj.position.copy(world);
     return obj;
   }
+}
+
+/** 探针标签数值格式化：自动选择常规小数或科学计数法 */
+export function formatProbeValue(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return v.toExponential(4);
+  return v.toFixed(6);
 }
 
 // -----------------------------

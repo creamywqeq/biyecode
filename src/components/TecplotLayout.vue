@@ -2,17 +2,18 @@
 import { computed, inject } from "vue";
 import SceneTree from "./SceneTree.vue";
 import LegendBar from "./LegendBar.vue";
-import SliceGizmo from "./SliceGizmo.vue";
 import DataLoadPanel from "./DataLoadPanel.vue";
 import ProbeTooltip from "./ProbeTooltip.vue";
 import ProbeRecordPanel from "./ProbeRecordPanel.vue";
 import IsosurfacePanel from "./IsosurfacePanel.vue";
+import ThresholdPanel from "./ThresholdPanel.vue";
+import SlicePanel from "./SlicePanel.vue";
 import { FLOW_APP_KEY } from "../app/flowAppContext";
 
 /**
- * TecplotLayout：类 Tecplot 布局
- * - 左侧：SceneTree + DataLoadPanel
- * - 底部居中：LegendBar
+ * TecplotLayout：类 Tecplot 360 EX 布局
+ * - 左侧：SceneTree + DataLoadPanel + IsosurfacePanel + ProbeRecordPanel
+ * - 右侧：LegendBar（貌似 Tecplot 右侧色条）
  * - SliceGizmo：仅在有数据时挂载，避免空场景异常
  */
 const app = inject(FLOW_APP_KEY);
@@ -29,30 +30,17 @@ const hasDataset = computed(() => !!app?.state.dataset.value);
     <div class="left">
       <DataLoadPanel />
       <SceneTree />
+      <ThresholdPanel v-if="hasDataset" />
+      <SlicePanel v-if="hasDataset" />
       <IsosurfacePanel v-if="hasDataset" />
       <ProbeRecordPanel v-if="hasDataset" />
     </div>
 
-    <div class="bottom">
+    <!-- 右侧色条（仅在有数据时显示） -->
+    <div v-if="hasDataset" class="right">
       <LegendBar />
     </div>
 
-    <!-- 切片 Gizmo + 模式切换 -->
-    <SliceGizmo v-if="hasDataset" />
-    <div v-if="hasDataset" class="slice-mode glass-panel">
-      <button
-        :class="{ active: app?.state.sliceGizmoMode.value === 'translate' }"
-        @click="app && (app.state.sliceGizmoMode.value = 'translate')"
-      >
-        平移
-      </button>
-      <button
-        :class="{ active: app?.state.sliceGizmoMode.value === 'rotate' }"
-        @click="app && (app.state.sliceGizmoMode.value = 'rotate')"
-      >
-        旋转
-      </button>
-    </div>
     <!-- Hover 探针 Tooltip -->
     <ProbeTooltip />
   </div>
@@ -67,48 +55,11 @@ const hasDataset = computed(() => !!app?.state.dataset.value);
 }
 
 .left,
+.right,
 .bottom,
-.header,
-.slice-mode {
+.header {
   pointer-events: auto;
   z-index: 2;
-}
-
-.slice-mode {
-  position: absolute;
-  right: 16px;
-  top: 64px;
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px;
-}
-.slice-mode button {
-  padding: 6px 14px;
-  border: 1px solid var(--glass-border);
-  border-radius: 10px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.25s ease, border-color 0.25s ease, transform 0.2s ease, box-shadow 0.2s ease;
-}
-.slice-mode button:hover {
-  background: var(--glass-bg-panel);
-  border-color: var(--glass-border-strong);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-.slice-mode button:active {
-  transform: translateY(0);
-}
-.slice-mode button.active {
-  background: rgba(59, 130, 246, 0.4);
-  border-color: rgba(59, 130, 246, 0.6);
-  color: #fff;
-  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.25);
 }
 
 .header {
@@ -149,6 +100,14 @@ const hasDataset = computed(() => !!app?.state.dataset.value);
   bottom: 16px;
   transform: translateX(-50%);
   min-width: 440px;
+}
+.right {
+  position: absolute;
+  right: 16px;
+  top: 120px;
+  bottom: 32px;
+  display: flex;
+  align-items: center;
 }
 </style>
 
