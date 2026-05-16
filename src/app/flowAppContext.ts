@@ -45,8 +45,6 @@ export type FlowAppState = {
   slicePlane: Ref<{ origin: [number, number, number]; normal: [number, number, number] }>;
   /** 切片轴向（X/Y/Z），用于一键切到坐标轴方向 */
   sliceAxis: Ref<"X" | "Y" | "Z" | "custom">;
-  /** 切片 Gizmo 模式：translate=平移 / rotate=旋转法线 */
-  sliceGizmoMode: Ref<"translate" | "rotate">;
   /** 等值面阈值（原始物理量数值） */
   isosurfaceValue: Ref<number>;
 };
@@ -77,7 +75,6 @@ export function createDefaultFlowAppState(): FlowAppState {
       normal: [0, 0, 1],
     }),
     sliceAxis: shallowRef<"X" | "Y" | "Z" | "custom">("Z"),
-    sliceGizmoMode: shallowRef<"translate" | "rotate">("translate"),
     isosurfaceValue: shallowRef(0)
   };
 }
